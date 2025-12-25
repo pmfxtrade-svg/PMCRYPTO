@@ -1,0 +1,5 @@
+{
+  "name": "PMcrypto",
+  "description": "Advanced cryptocurrency market analysis dashboard with TradingView integration, intelligent caching, and multi-view support.",
+  "requestFramePermissions": []
+}
