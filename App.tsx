@@ -5,7 +5,8 @@ import {
   MoreHorizontal, Calculator, Copy, Download, Upload, AlertCircle, X,
   Sun, Moon, Activity, Clock, BarChart2, Maximize2, Minimize2, Copy as CopyIcon,
   BrainCircuit, Sparkles, Plus, Check, Trash2, ChevronDown, Database, Cloud, CloudOff,
-  Globe, Ban, Undo2, History, Smartphone, RefreshCw, User, LogOut, Lock, Mail
+  Globe, Ban, Undo2, History, Smartphone, RefreshCw, User, LogOut, Lock, Mail,
+  CheckCircle, Info, XCircle
 } from 'lucide-react';
 import { fetchCoins, searchGlobal } from './services/api';
 import { CoinData, AppSettings, ProfitCalcState, GridColumns, Theme, Timeframe, ChartScale, FavoriteList } from './types';
@@ -452,6 +453,13 @@ const CoinCard: React.FC<CoinCardProps> = ({ coin, settings, onFavoriteClick, hi
 // MAIN APP COMPONENT
 // ----------------------------------------------------------------------
 
+// Types for Toasts
+interface Toast {
+  id: number;
+  message: string;
+  type: 'success' | 'error' | 'info';
+}
+
 const App: React.FC = () => {
   // -- State --
   const [coins, setCoins] = useState<CoinData[]>([]);
@@ -459,12 +467,15 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState<number>(1);
   const [searchTerm, setSearchTerm] = useState<string>('');
-  const [isGlobalSearch, setIsGlobalSearch] = useState(false); // New flag for global search mode
-  const [targetRankToOpen, setTargetRankToOpen] = useState<number | null>(null); // To auto-open drawer after jump
+  const [isGlobalSearch, setIsGlobalSearch] = useState(false); 
+  const [targetRankToOpen, setTargetRankToOpen] = useState<number | null>(null); 
   
   // Auth State
   const [session, setSession] = useState<Session | null>(null);
   
+  // Toast State
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
   // Settings / Persistence
   const [settings, setSettings] = useState<AppSettings>(() => {
     const saved = localStorage.getItem('pmcrypto_settings');
@@ -476,7 +487,6 @@ const App: React.FC = () => {
     // Ensure the 3 permanent lists exist
     DEFAULT_PERMANENT_LISTS.forEach(defList => {
        if (!initialLists.find(l => l.id === defList.id)) {
-           // If migrating from old "favorites" (string[]), add them to General
            if (defList.id === 'list_general' && parsed.favorites && Array.isArray(parsed.favorites)) {
                initialLists.push({ ...defList, coinIds: parsed.favorites });
            } else {
@@ -526,6 +536,19 @@ const App: React.FC = () => {
   // Global Simulation Amount State
   const [simulationAmount, setSimulationAmount] = useState<number>(100);
   const [investAmount, setInvestAmount] = useState<string>('1000');
+
+  // -- Helpers --
+  const addToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 3500);
+  };
+  
+  const removeToast = (id: number) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  };
 
   // -- Effects --
   useEffect(() => {
@@ -631,12 +654,9 @@ const App: React.FC = () => {
           const remoteSettings = data.settings as AppSettings;
           
           setSettings(prev => {
-             // Logic: If user just logged in and has empty local settings, definitely take cloud.
-             // If local settings exist, compare timestamps.
              const remoteTime = remoteSettings.lastUpdated || 0;
              const localTime = prev.lastUpdated || 0;
 
-             // Prioritize Cloud on Login usually, unless local is clearly newer
              if (remoteTime >= localTime) {
                  return { ...prev, ...remoteSettings };
              } else {
@@ -645,7 +665,6 @@ const App: React.FC = () => {
           });
           setDbStatus('synced');
         } else {
-             // No settings yet for this user, we might want to push current local settings to them
              setDbStatus('synced');
         }
       } catch (e) {
@@ -709,6 +728,7 @@ const App: React.FC = () => {
                   password: authPassword,
               });
               if (error) throw error;
+              addToast("Successfully signed in", "success");
               setShowAuthModal(false);
           } else {
               const { error } = await supabase.auth.signUp({
@@ -716,7 +736,7 @@ const App: React.FC = () => {
                   password: authPassword,
               });
               if (error) throw error;
-              alert("Check your email for the confirmation link!");
+              addToast("Check your email for the confirmation link!", "info");
               setShowAuthModal(false);
           }
       } catch (err: any) {
@@ -730,7 +750,7 @@ const App: React.FC = () => {
       await supabase.auth.signOut();
       setSession(null);
       setDbStatus('offline');
-      // Optional: Clear settings or keep them? Keeping them is better UX.
+      addToast("Signed out successfully", "success");
   };
 
   const loadData = async () => {
@@ -758,6 +778,7 @@ const App: React.FC = () => {
       favoriteLists: [...prev.favoriteLists, newList]
     }));
     setNewListName('');
+    addToast(`List "${newListName}" created`, "success");
   };
 
   const toggleCoinInList = (listId: string, coinId: string) => {
@@ -781,24 +802,27 @@ const App: React.FC = () => {
   const deleteList = (listId: string) => {
     // Prevent deleting default lists
     if (listId.startsWith('list_')) {
-        alert("This is a permanent system list and cannot be deleted.");
+        addToast("This is a permanent system list and cannot be deleted.", "error");
         return;
     }
     if (confirm("Delete this list?")) {
       modifySettings(prev => ({
         favoriteLists: prev.favoriteLists.filter(l => l.id !== listId)
       }));
+      addToast("List deleted", "success");
     }
   };
 
   const hideCoin = (id: string) => {
     modifySettings(prev => ({ hiddenCoins: [...prev.hiddenCoins, id] }));
+    addToast("Coin hidden from view", "info");
   };
   
   const restoreUserHiddenCoin = (id: string) => {
       modifySettings(prev => ({
           hiddenCoins: prev.hiddenCoins.filter(cId => cId !== id)
       }));
+      addToast("Coin restored", "success");
   };
 
   const toggleRestoredGlobal = (id: string) => {
@@ -814,6 +838,7 @@ const App: React.FC = () => {
 
   const restoreHidden = () => {
     modifySettings({ hiddenCoins: [] });
+    addToast("All hidden coins restored", "success");
   };
 
   const toggleTheme = () => {
@@ -848,10 +873,14 @@ Key Request:
 3. Review any recent news or fundamental developments.
 4. Provide a risk assessment and potential outlook.
 
+IMPORTANT: Please provide the entire response in Persian language.
+لطفاً تحلیل کامل را به زبان فارسی ارائه دهید.
+
 Thank you.`;
 
     navigator.clipboard.writeText(prompt).then(() => {
-      alert(`Analysis prompt for ${coin.name} copied to clipboard! You can now paste it into Gemini.`);
+      addToast(`AI Prompt copied! Opening Gemini...`, "success");
+      window.open("https://gemini.google.com/", "_blank");
     });
   };
 
@@ -863,6 +892,7 @@ Thank you.`;
     document.body.appendChild(downloadAnchorNode);
     downloadAnchorNode.click();
     downloadAnchorNode.remove();
+    addToast("Settings exported successfully", "success");
   };
 
   const handleImport = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -878,12 +908,12 @@ Thank you.`;
                 delete imported.favorites;
              }
             modifySettings(imported);
-            alert('Settings imported successfully!');
+            addToast("Settings imported successfully!", "success");
         } else {
             throw new Error();
         }
       } catch (e) {
-        alert('Invalid file format or corrupt data.');
+        addToast("Invalid file format or corrupt data.", "error");
       }
     };
     reader.readAsText(file);
@@ -920,7 +950,7 @@ on public.app_settings for update
 using (auth.uid() = user_id);
     `;
     navigator.clipboard.writeText(sql.trim()).then(() => {
-        alert("SQL Code copied to clipboard!");
+        addToast("SQL Code copied to clipboard!", "success");
     });
   };
 
@@ -928,6 +958,7 @@ using (auth.uid() = user_id);
       if (session) {
           if (confirm("This will overwrite your local settings with the cloud version. Continue?")) {
               loadRemoteSettings(session.user.id);
+              addToast("Synced with cloud", "success");
           }
       }
   };
@@ -1268,6 +1299,26 @@ create policy "Users can update their own settings" on public.app_settings for u
   // -- Main Render --
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-200 font-sans selection:bg-blue-500/30 transition-colors duration-300">
+      {/* Toast Container */}
+      <div className="fixed bottom-4 right-4 z-[110] flex flex-col gap-2 pointer-events-none">
+        {toasts.map(toast => (
+           <div 
+             key={toast.id} 
+             onClick={() => removeToast(toast.id)}
+             className={`pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg border animate-in slide-in-from-right-10 fade-in duration-300 cursor-pointer ${
+               toast.type === 'success' ? 'bg-white dark:bg-slate-800 border-green-200 dark:border-green-800 text-green-700 dark:text-green-400' :
+               toast.type === 'error' ? 'bg-white dark:bg-slate-800 border-red-200 dark:border-red-800 text-red-700 dark:text-red-400' :
+               'bg-white dark:bg-slate-800 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400'
+             }`}
+           >
+              {toast.type === 'success' ? <CheckCircle size={20} className="shrink-0" /> : 
+               toast.type === 'error' ? <XCircle size={20} className="shrink-0" /> : 
+               <Info size={20} className="shrink-0" />}
+              <span className="text-sm font-medium">{toast.message}</span>
+           </div>
+        ))}
+      </div>
+
       {/* Header */}
       <header className="sticky top-0 z-40 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800">
         <div className="w-full px-4 md:px-6 py-3">
@@ -1451,7 +1502,7 @@ create policy "Users can update their own settings" on public.app_settings for u
                 )}
               </button>
               
-               {/* AUTH BUTTON - REPLACES DATABASE BUTTON */}
+               {/* AUTH BUTTON */}
               {session ? (
                   <div className="flex items-center bg-blue-50 dark:bg-blue-900/20 rounded border border-blue-200 dark:border-blue-800 overflow-hidden">
                       <div className="px-2 py-1 text-xs font-medium text-blue-700 dark:text-blue-300 border-r border-blue-200 dark:border-blue-800 flex items-center gap-1">
