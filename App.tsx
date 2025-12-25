@@ -5,13 +5,14 @@ import {
   MoreHorizontal, Calculator, Copy, Download, Upload, AlertCircle, X,
   Sun, Moon, Activity, Clock, BarChart2, Maximize2, Minimize2, Copy as CopyIcon,
   BrainCircuit, Sparkles, Plus, Check, Trash2, ChevronDown, Database, Cloud, CloudOff,
-  Globe, Ban, Undo2, History
+  Globe, Ban, Undo2, History, Smartphone, RefreshCw, User, LogOut, Lock, Mail
 } from 'lucide-react';
 import { fetchCoins, searchGlobal } from './services/api';
 import { CoinData, AppSettings, ProfitCalcState, GridColumns, Theme, Timeframe, ChartScale, FavoriteList } from './types';
 import TradingViewWidget from './components/TradingViewWidget';
 import { supabase } from './services/supabaseClient';
 import { IGNORED_COINS_GLOBAL } from './constants/ignoredCoins';
+import { Session } from '@supabase/supabase-js';
 
 // ----------------------------------------------------------------------
 // HELPER FUNCTIONS
@@ -40,16 +41,6 @@ const formatCoinIdName = (id: string) => {
     .split('-')
     .map(word => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ');
-};
-
-// Generate or retrieve a unique client ID for this browser to store settings in DB
-const getClientId = () => {
-  let id = localStorage.getItem('pmcrypto_client_id');
-  if (!id) {
-    id = crypto.randomUUID();
-    localStorage.setItem('pmcrypto_client_id', id);
-  }
-  return id;
 };
 
 // Constants for Permanent Lists
@@ -470,7 +461,10 @@ const App: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [isGlobalSearch, setIsGlobalSearch] = useState(false); // New flag for global search mode
   const [targetRankToOpen, setTargetRankToOpen] = useState<number | null>(null); // To auto-open drawer after jump
-
+  
+  // Auth State
+  const [session, setSession] = useState<Session | null>(null);
+  
   // Settings / Persistence
   const [settings, setSettings] = useState<AppSettings>(() => {
     const saved = localStorage.getItem('pmcrypto_settings');
@@ -502,7 +496,7 @@ const App: React.FC = () => {
       showAllCharts: parsed.showAllCharts || false,
       timeframe: parsed.timeframe || 'M',
       chartScale: parsed.chartScale || 'log',
-      lastUpdated: parsed.lastUpdated || Date.now() // Init timestamp
+      lastUpdated: parsed.lastUpdated || 0 
     };
   });
   
@@ -521,8 +515,13 @@ const App: React.FC = () => {
   const [ignoreModalTab, setIgnoreModalTab] = useState<'new' | 'old'>('new');
   const [ignoreSearch, setIgnoreSearch] = useState('');
 
-  // Database Modal
-  const [showDbModal, setShowDbModal] = useState(false);
+  // Auth Modal States
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authMode, setAuthMode] = useState<'signin' | 'signup' | 'sql'>('signin');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
 
   // Global Simulation Amount State
   const [simulationAmount, setSimulationAmount] = useState<number>(100);
@@ -535,6 +534,27 @@ const App: React.FC = () => {
       loadData();
     }
   }, [page, isGlobalSearch]);
+
+  // Handle Auth State Changes
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (session) {
+         loadRemoteSettings(session.user.id);
+      }
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) {
+          loadRemoteSettings(session.user.id);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   // Effect to handle Auto-Open Drawer when Target Rank is found
   useEffect(() => {
@@ -563,15 +583,12 @@ const App: React.FC = () => {
       const num = parseInt(term);
       
       // Case 1: Numeric Search (Rank Jump)
-      // Rank 1-1000 -> Page 1, Rank 1001-2000 -> Page 2, etc.
-      // Page = Math.floor((Rank - 1) / 1000) + 1
       if (!isNaN(num) && num > 0) {
-        // UPDATED: Use 1000 instead of 100 for page calculation
         const targetPage = Math.floor((num - 1) / 1000) + 1;
         setPage(targetPage);
-        setTargetRankToOpen(num); // Set flag to open drawer when data arrives
-        setIsGlobalSearch(false); // Ensure we are in pagination mode
-        setSearchTerm(''); // Clear search term so the grid shows the page content
+        setTargetRankToOpen(num); 
+        setIsGlobalSearch(false);
+        setSearchTerm(''); 
         return;
       }
 
@@ -601,52 +618,40 @@ const App: React.FC = () => {
     });
   }, []);
 
-  // Load Settings from Supabase on Mount
-  useEffect(() => {
-    const loadRemoteSettings = async () => {
-      const clientId = getClientId();
+  const loadRemoteSettings = useCallback(async (userId: string) => {
       try {
         const { data, error } = await supabase
           .from('app_settings')
           .select('settings')
-          .eq('client_id', clientId)
+          .eq('user_id', userId)
           .single();
 
         if (data && data.settings) {
-          console.log("Settings loaded from Supabase");
-          
+          console.log("Settings loaded from Supabase for User");
           const remoteSettings = data.settings as AppSettings;
           
           setSettings(prev => {
-             // SMART MERGE: Only apply remote if it's newer than local
-             // This prevents overwriting fresh local changes with stale/empty remote data
+             // Logic: If user just logged in and has empty local settings, definitely take cloud.
+             // If local settings exist, compare timestamps.
              const remoteTime = remoteSettings.lastUpdated || 0;
              const localTime = prev.lastUpdated || 0;
 
-             if (remoteTime > localTime) {
-                 console.log(`Applying remote settings (Remote: ${remoteTime} > Local: ${localTime})`);
+             // Prioritize Cloud on Login usually, unless local is clearly newer
+             if (remoteTime >= localTime) {
                  return { ...prev, ...remoteSettings };
              } else {
-                 console.log(`Keeping local settings (Local: ${localTime} >= Remote: ${remoteTime})`);
                  return prev;
              }
           });
-
           setDbStatus('synced');
-        } else if (error && error.code === 'PGRST116') {
-          // No settings found (Row doesn't exist yet)
-          // We will create it on the first save
-          setDbStatus('synced'); // Technically synced as we have "latest" (empty)
         } else {
-            console.error("Error loading settings:", error);
-            setDbStatus('error');
+             // No settings yet for this user, we might want to push current local settings to them
+             setDbStatus('synced');
         }
       } catch (e) {
         console.error("Supabase connection error:", e);
         setDbStatus('error');
       }
-    };
-    loadRemoteSettings();
   }, []);
 
   // Save Settings (LocalStorage + Supabase with Debounce)
@@ -661,43 +666,77 @@ const App: React.FC = () => {
       document.documentElement.classList.remove('dark');
     }
 
-    // 2. Remote Save (Debounced)
-    // This saves the ENTIRE settings object, which includes 'favoriteLists' and 'hiddenCoins'.
-    // Thus fulfilling the requirement to persist these in Supabase permanently.
-    setDbStatus('pending');
-    const timer = setTimeout(async () => {
-      const clientId = getClientId();
-      try {
-        // We use upsert. Requires 'client_id' to be a unique key in the DB.
-        const { error } = await supabase
-          .from('app_settings')
-          .upsert(
-            { client_id: clientId, settings: settings },
-            { onConflict: 'client_id' }
-          );
-        
-        if (error) {
-            console.error("Supabase save error:", error);
-            setDbStatus('error');
-        } else {
-            setDbStatus('synced');
-        }
-      } catch (e) {
-         console.error("Supabase save exception:", e);
-         setDbStatus('error');
-      }
-    }, 1500); // 1.5s debounce
-
-    return () => clearTimeout(timer);
-  }, [settings]);
+    // 2. Remote Save (Debounced) - Only if Logged In
+    if (session) {
+        setDbStatus('pending');
+        const timer = setTimeout(async () => {
+          try {
+            const { error } = await supabase
+              .from('app_settings')
+              .upsert(
+                { user_id: session.user.id, settings: settings },
+                { onConflict: 'user_id' }
+              );
+            
+            if (error) {
+                console.error("Supabase save error:", error);
+                setDbStatus('error');
+            } else {
+                setDbStatus('synced');
+            }
+          } catch (e) {
+             console.error("Supabase save exception:", e);
+             setDbStatus('error');
+          }
+        }, 1500); // 1.5s debounce
+        return () => clearTimeout(timer);
+    } else {
+        setDbStatus('offline');
+    }
+  }, [settings, session]);
 
   // -- Handlers --
+  
+  const handleAuth = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setAuthLoading(true);
+      setAuthError('');
+      
+      try {
+          if (authMode === 'signin') {
+              const { error } = await supabase.auth.signInWithPassword({
+                  email: authEmail,
+                  password: authPassword,
+              });
+              if (error) throw error;
+              setShowAuthModal(false);
+          } else {
+              const { error } = await supabase.auth.signUp({
+                  email: authEmail,
+                  password: authPassword,
+              });
+              if (error) throw error;
+              alert("Check your email for the confirmation link!");
+              setShowAuthModal(false);
+          }
+      } catch (err: any) {
+          setAuthError(err.message);
+      } finally {
+          setAuthLoading(false);
+      }
+  };
+
+  const handleLogout = async () => {
+      await supabase.auth.signOut();
+      setSession(null);
+      setDbStatus('offline');
+      // Optional: Clear settings or keep them? Keeping them is better UX.
+  };
 
   const loadData = async () => {
     setLoading(true);
     setError(null);
     try {
-      // API now defaults to 1000 items, but passing page is still required
       const data = await fetchCoins(page);
       setCoins(data);
     } catch (err: any) {
@@ -833,14 +872,12 @@ Thank you.`;
     reader.onload = (e) => {
       try {
         const imported = JSON.parse(e.target?.result as string);
-        // Basic validation
         if (imported.favoriteLists || imported.favorites) {
-            // Handle migration if importing old config
              if (imported.favorites && !imported.favoriteLists) {
                 imported.favoriteLists = [{ id: 'list_general', name: 'General', coinIds: imported.favorites }];
                 delete imported.favorites;
              }
-            modifySettings(imported); // Use modifySettings to update timestamp
+            modifySettings(imported);
             alert('Settings imported successfully!');
         } else {
             throw new Error();
@@ -854,73 +891,65 @@ Thank you.`;
   
   const handleCopySQL = () => {
     const sql = `
--- Create a table for storing user settings and favorites
-create table if not exists public.app_settings (
-  id bigint generated by default as identity primary key,
-  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-  settings jsonb not null default '{}'::jsonb,
-  client_id text
-);
+-- Drop old table if exists (optional, but cleaner for new auth structure)
+drop table if exists public.app_settings;
 
--- IMPORTANT: Make client_id unique to enable UPSERT operations
-alter table public.app_settings add constraint app_settings_client_id_key unique (client_id);
+-- Create table linked to Supabase Auth Users
+create table public.app_settings (
+  user_id uuid references auth.users not null primary key,
+  settings jsonb not null default '{}'::jsonb,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
 
 -- Enable Row Level Security (RLS)
 alter table public.app_settings enable row level security;
 
--- Create a policy to allow public access (demo mode)
-create policy "Enable public access for all operations"
-on public.app_settings
-as permissive
-for all
-to public
-using (true)
-with check (true);
+-- Policy: Users can see their own settings
+create policy "Users can select their own settings" 
+on public.app_settings for select 
+using (auth.uid() = user_id);
+
+-- Policy: Users can insert their own settings
+create policy "Users can insert their own settings" 
+on public.app_settings for insert 
+with check (auth.uid() = user_id);
+
+-- Policy: Users can update their own settings
+create policy "Users can update their own settings" 
+on public.app_settings for update 
+using (auth.uid() = user_id);
     `;
     navigator.clipboard.writeText(sql.trim()).then(() => {
         alert("SQL Code copied to clipboard!");
     });
   };
 
+  const handleForceLoad = () => {
+      if (session) {
+          if (confirm("This will overwrite your local settings with the cloud version. Continue?")) {
+              loadRemoteSettings(session.user.id);
+          }
+      }
+  };
+
   // -- Derived State --
   const filteredCoins = useMemo(() => {
-    // If Global Search mode is active, we don't want to filter by the term locally 
-    // unless we want to refine the search results.
-    // BUT: For numeric rank jump, we DO want to filter locally.
-    
-    // Check if numeric (Rank Jump Mode)
     const isNumericSearch = !isNaN(parseInt(searchTerm));
 
-    // FILTER COINS:
-    // 1. Exclude user-hidden coins (settings.hiddenCoins)
-    // 2. Exclude globally ignored coins (IGNORED_COINS_SET) UNLESS they are in restoredGlobalCoins
     let result = coins.filter(c => {
-      // If hidden by user, exclude
       if (settings.hiddenCoins.includes(c.id)) return false;
-      
-      // If in global ignore list...
       if (IGNORED_COINS_SET.has(c.id)) {
-          // ...but is restored, keep it
           if (settings.restoredGlobalCoins.includes(c.id)) return true;
-          // ...otherwise exclude
           return false;
       }
-      
       return true;
     });
 
     if (searchTerm) {
       const lower = searchTerm.toLowerCase().trim();
-      
-      // If we are in global search mode (string search), 'coins' already contains only the results.
-      // We shouldn't filter them out unless the user types more. 
-      // However, usually API returns matches.
-      
-      // If Numeric Search (Rank Jump): We MUST filter to show only that rank on the current page.
       if (isNumericSearch) {
          result = result.filter(c => c.market_cap_rank.toString() === lower);
       } else if (!isGlobalSearch) {
-         // Standard local filter (filtering current page 100 items)
          result = result.filter(c => 
            c.name.toLowerCase().includes(lower) || 
            c.symbol.toLowerCase().includes(lower)
@@ -930,7 +959,6 @@ with check (true);
 
     switch (filterType) {
       case 'favorites':
-        // Filter by the currently active list ID
         const activeList = settings.favoriteLists.find(l => l.id === settings.activeListId);
         if (activeList) {
           result = result.filter(c => activeList.coinIds.includes(c.id));
@@ -960,7 +988,7 @@ with check (true);
                 <div className="space-y-2 max-h-60 overflow-y-auto">
                     {settings.favoriteLists.map(list => {
                         const isChecked = list.coinIds.includes(coin.id);
-                        const isPermanent = list.id.startsWith('list_'); // Check if permanent list
+                        const isPermanent = list.id.startsWith('list_'); 
                         return (
                             <label key={list.id} className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700/50 rounded cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 transition">
                                 <div className="flex items-center gap-3">
@@ -1154,56 +1182,86 @@ with check (true);
     );
   };
   
-  const renderDatabaseModal = () => (
-      <Modal isOpen={showDbModal} onClose={() => setShowDbModal(false)} title="Database Setup Required">
-        <div className="space-y-4">
-           <div className="bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-300 p-3 rounded text-sm border border-blue-100 dark:border-blue-800">
-             Supabase protects your data by default. To allow this app to save settings remotely, you must run the SQL below to create tables and enable public access.
-           </div>
-           
-           <div className="relative group">
-              <pre className="bg-slate-900 text-slate-300 p-3 rounded text-xs font-mono overflow-x-auto border border-slate-700">
-{`-- Create a table for storing user settings and favorites
+  const renderAuthModal = () => (
+      <Modal isOpen={showAuthModal} onClose={() => setShowAuthModal(false)} title={authMode === 'sql' ? "Database Setup" : authMode === 'signin' ? "Sign In" : "Sign Up"}>
+         {authMode === 'sql' ? (
+             <div className="space-y-4">
+                 <div className="bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-300 p-3 rounded text-sm border border-blue-100 dark:border-blue-800">
+                    To use cloud features securely, you must run this SQL in your Supabase dashboard. This sets up the table with "Row Level Security" so only you can access your data.
+                 </div>
+                 <div className="relative group">
+                  <pre className="bg-slate-900 text-slate-300 p-3 rounded text-[10px] font-mono overflow-x-auto border border-slate-700 max-h-40">
+{`-- Create secure table linked to Auth Users
 create table if not exists public.app_settings (
-  id bigint generated by default as identity primary key,
-  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  user_id uuid references auth.users not null primary key,
   settings jsonb not null default '{}'::jsonb,
-  client_id text
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
--- IMPORTANT: Make client_id unique to enable UPSERT operations
-alter table public.app_settings add constraint app_settings_client_id_key unique (client_id);
-
--- Enable Row Level Security (RLS)
 alter table public.app_settings enable row level security;
 
--- Create a policy to allow public access (demo mode)
-create policy "Enable public access for all operations"
-on public.app_settings
-as permissive
-for all
-to public
-using (true)
-with check (true);`}
-              </pre>
-              <button 
-                onClick={handleCopySQL}
-                className="absolute top-2 right-2 p-1 bg-slate-700 text-white rounded hover:bg-slate-600 opacity-0 group-hover:opacity-100 transition"
-              >
-                <Copy size={14} />
-              </button>
-           </div>
-           
-           <div className="text-sm text-slate-600 dark:text-slate-400 space-y-2">
-             <p><strong>Instructions:</strong></p>
-             <ol className="list-decimal pl-4 space-y-1">
-               <li>Click <strong>Copy SQL</strong> (hover over the code block).</li>
-               <li>Go to your <a href="https://supabase.com/dashboard/project/pwsarhttuhdlwjsfigcx/sql" target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">Supabase SQL Editor</a>.</li>
-               <li>Paste the code and click <strong>Run</strong>.</li>
-               <li>Come back here and try adding a wallet!</li>
-             </ol>
-           </div>
-        </div>
+create policy "Users can select their own settings" on public.app_settings for select using (auth.uid() = user_id);
+create policy "Users can insert their own settings" on public.app_settings for insert with check (auth.uid() = user_id);
+create policy "Users can update their own settings" on public.app_settings for update using (auth.uid() = user_id);`}
+                  </pre>
+                  <button onClick={handleCopySQL} className="absolute top-2 right-2 p-1 bg-slate-700 text-white rounded hover:bg-slate-600 opacity-0 group-hover:opacity-100 transition"><Copy size={14} /></button>
+                 </div>
+                 <button onClick={() => setAuthMode('signin')} className="w-full bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white py-2 rounded font-bold hover:bg-slate-300 dark:hover:bg-slate-600 transition">Back to Sign In</button>
+             </div>
+         ) : (
+            <form onSubmit={handleAuth} className="space-y-4">
+                {authError && <div className="p-3 bg-red-100 text-red-700 text-sm rounded">{authError}</div>}
+                
+                <div>
+                    <label className="block text-sm font-medium mb-1">Email</label>
+                    <div className="relative">
+                        <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                        <input 
+                            type="email" 
+                            required 
+                            className="w-full pl-9 pr-3 py-2 bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded text-sm focus:border-blue-500 focus:outline-none"
+                            value={authEmail} 
+                            onChange={(e) => setAuthEmail(e.target.value)}
+                            placeholder="you@example.com"
+                        />
+                    </div>
+                </div>
+
+                <div>
+                    <label className="block text-sm font-medium mb-1">Password</label>
+                    <div className="relative">
+                        <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                        <input 
+                            type="password" 
+                            required 
+                            className="w-full pl-9 pr-3 py-2 bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded text-sm focus:border-blue-500 focus:outline-none"
+                            value={authPassword} 
+                            onChange={(e) => setAuthPassword(e.target.value)}
+                            placeholder="••••••••"
+                            minLength={6}
+                        />
+                    </div>
+                </div>
+
+                <button 
+                    type="submit" 
+                    disabled={authLoading}
+                    className="w-full bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700 transition flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                    {authLoading && <RefreshCw className="animate-spin" size={16} />}
+                    {authMode === 'signin' ? 'Sign In' : 'Sign Up'}
+                </button>
+
+                <div className="flex items-center justify-between text-xs text-slate-500 mt-4">
+                    <button type="button" onClick={() => setAuthMode(authMode === 'signin' ? 'signup' : 'signin')} className="hover:text-blue-500 underline">
+                        {authMode === 'signin' ? "Don't have an account? Sign Up" : "Already have an account? Sign In"}
+                    </button>
+                    <button type="button" onClick={() => setAuthMode('sql')} className="hover:text-slate-800 dark:hover:text-slate-300 flex items-center gap-1">
+                        <Database size={12} /> Database Setup
+                    </button>
+                </div>
+            </form>
+         )}
       </Modal>
   );
 
@@ -1379,7 +1437,7 @@ with check (true);`}
                 {settings.theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
               </button>
 
-              {/* Ignored Management Button - REPLACES old EyeOff button */}
+              {/* Ignored Management Button */}
               <button 
                 onClick={() => setShowIgnoreModal(true)} 
                 className="p-2 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white relative group"
@@ -1393,14 +1451,37 @@ with check (true);`}
                 )}
               </button>
               
-               {/* Database Button */}
-              <button 
-                onClick={() => setShowDbModal(true)} 
-                className={`p-2 transition ${dbStatus === 'synced' ? 'text-green-500' : dbStatus === 'error' ? 'text-red-500 animate-pulse' : dbStatus === 'pending' ? 'text-yellow-500' : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'}`}
-                title={dbStatus === 'error' ? "Database Sync Failed - Click to Fix" : "Database Connection"}
-              >
-                {dbStatus === 'synced' || dbStatus === 'pending' ? <Cloud size={18} /> : <Database size={18} />}
-              </button>
+               {/* AUTH BUTTON - REPLACES DATABASE BUTTON */}
+              {session ? (
+                  <div className="flex items-center bg-blue-50 dark:bg-blue-900/20 rounded border border-blue-200 dark:border-blue-800 overflow-hidden">
+                      <div className="px-2 py-1 text-xs font-medium text-blue-700 dark:text-blue-300 border-r border-blue-200 dark:border-blue-800 flex items-center gap-1">
+                          <User size={12} />
+                          <span className="max-w-[80px] truncate">{session.user.email?.split('@')[0]}</span>
+                      </div>
+                      <button 
+                          onClick={handleForceLoad} 
+                          className="px-2 py-1 hover:bg-blue-100 dark:hover:bg-blue-800 transition"
+                          title="Force Cloud Sync"
+                      >
+                          <Cloud size={14} className={dbStatus === 'synced' ? 'text-green-500' : dbStatus === 'error' ? 'text-red-500' : 'text-slate-400'} />
+                      </button>
+                      <button 
+                          onClick={handleLogout} 
+                          className="px-2 py-1 hover:bg-red-100 dark:hover:bg-red-900/30 hover:text-red-600 transition"
+                          title="Sign Out"
+                      >
+                          <LogOut size={14} />
+                      </button>
+                  </div>
+              ) : (
+                  <button 
+                    onClick={() => { setAuthMode('signin'); setShowAuthModal(true); }} 
+                    className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-bold hover:bg-blue-700 transition shadow-sm"
+                  >
+                    <User size={14} />
+                    Sign In
+                  </button>
+              )}
 
               <button onClick={handleExport} className="p-2 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white" title="Export Settings">
                 <Download size={18} />
@@ -1614,7 +1695,7 @@ with check (true);`}
       {renderProfitCalculator()}
       {renderFavoriteModal()}
       {renderIgnoredManagementModal()}
-      {renderDatabaseModal()}
+      {renderAuthModal()}
       <Drawer 
          isOpen={drawerState.isOpen} 
          coin={drawerState.coin} 
