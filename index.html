@@ -25,6 +25,15 @@
         }
       }
     </script>
+    <script>
+      // Polyfill for 'process' to avoid ReferenceError in browser environments (Netlify)
+      // This prevents the "White Screen" crash when libraries try to access process.env
+      window.process = {
+        env: {
+          NODE_ENV: 'production'
+        }
+      };
+    </script>
     <style>
       /* Custom Scrollbar */
       ::-webkit-scrollbar {
@@ -59,5 +68,7 @@
 </head>
   <body>
     <div id="root"></div>
+    <!-- Missing Entry Point Script Fixed Below -->
+    <script type="module" src="/index.tsx"></script>
   </body>
 </html>
