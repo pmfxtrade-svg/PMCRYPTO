@@ -33,6 +33,8 @@ export interface CoinData {
   price_change_percentage_7d_in_currency?: number | null;
   price_change_percentage_30d_in_currency?: number | null;
   price_change_percentage_1y_in_currency?: number | null;
+  // For Non-Crypto Assets (Stocks/Indices) to control TradingView symbol format
+  tv_symbol?: string; 
 }
 
 export type ViewMode = 'grid' | 'table';
@@ -40,6 +42,7 @@ export type GridColumns = 1 | 2 | 3 | 4;
 export type Theme = 'dark' | 'light';
 export type Timeframe = '15' | '60' | '240' | 'D' | 'W' | 'M';
 export type ChartScale = 'log' | 'linear';
+export type MarketType = 'crypto' | 'stocks' | 'indices' | 'commodities' | 'nyse' | 'nasdaq' | 'eu' | 'hkex';
 
 export interface FavoriteList {
   id: string;
@@ -48,17 +51,18 @@ export interface FavoriteList {
 }
 
 export interface AppSettings {
-  favoriteLists: FavoriteList[]; // Changed from simple string[]
-  activeListId: string; // To track which list is currently being viewed/filtered
-  hiddenCoins: string[]; // "NEW" ignored coins (User action)
-  restoredGlobalCoins: string[]; // Allow-list to override "OLD" global ignores
+  favoriteLists: FavoriteList[]; 
+  activeListId: string; 
+  hiddenCoins: string[]; 
+  restoredGlobalCoins: string[];
   gridColumns: GridColumns;
   viewMode: ViewMode;
   theme: Theme;
   showAllCharts: boolean;
   timeframe: Timeframe;
   chartScale: ChartScale;
-  lastUpdated?: number; // Timestamp for sync conflict resolution
+  marketType: MarketType; // New field for market selection
+  lastUpdated?: number; 
 }
 
 export interface ProfitCalcState {

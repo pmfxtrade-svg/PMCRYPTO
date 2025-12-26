@@ -8,6 +8,7 @@ declare global {
 
 interface TradingViewWidgetProps {
   symbol: string;
+  tvSymbol?: string; // Direct override for specific symbols (like NASDAQ:AAPL)
   theme?: 'dark' | 'light';
   isVisible: boolean;
   interval?: string;
@@ -44,6 +45,7 @@ const enqueueLoad = (callback: () => void) => {
 
 const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({ 
   symbol, 
+  tvSymbol,
   theme = 'dark', 
   isVisible,
   interval = 'D',
@@ -99,9 +101,17 @@ const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
 
         const isDark = theme === 'dark';
         
-        const tvSymbol = chartType === 'market_cap' 
-          ? `CRYPTOCAP:${symbol.toUpperCase()}` 
-          : `${symbol.toUpperCase()}USDT`;
+        // Symbol Logic:
+        // 1. If tvSymbol is provided (Stocks/Indices), use it directly.
+        // 2. If chartType is market_cap, use CRYPTOCAP prefix.
+        // 3. Default to Crypto formatting (SYMBOL + USDT).
+        let finalSymbol = `${symbol.toUpperCase()}USDT`;
+        
+        if (tvSymbol) {
+            finalSymbol = tvSymbol;
+        } else if (chartType === 'market_cap') {
+            finalSymbol = `CRYPTOCAP:${symbol.toUpperCase()}`;
+        }
 
         const overrides: any = {
            "mainSeriesProperties.priceAxisProperties.log": scale === 'log',
@@ -122,7 +132,7 @@ const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
 
         new window.TradingView.widget({
           "autosize": true,
-          "symbol": tvSymbol,
+          "symbol": finalSymbol,
           "interval": interval,
           "timezone": "Etc/UTC",
           "theme": theme,
@@ -178,7 +188,7 @@ const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
       }
     }
 
-  }, [symbol, theme, interval, scale, chartType, shouldRender, isPermanentlyLoaded]);
+  }, [symbol, tvSymbol, theme, interval, scale, chartType, shouldRender, isPermanentlyLoaded]);
 
   // If not supposed to render yet, show a placeholder
   if (!shouldRender && !isPermanentlyLoaded) {

@@ -6,18 +6,123 @@ import {
   Sun, Moon, Activity, Clock, BarChart2, Maximize2, Minimize2, Copy as CopyIcon,
   BrainCircuit, Sparkles, Plus, Check, Trash2, ChevronDown, Database, Cloud, CloudOff,
   Globe, Ban, Undo2, History, Smartphone, RefreshCw, User, LogOut, Lock, Mail,
-  CheckCircle, Info, XCircle, Eye
+  CheckCircle, Info, XCircle, Eye, Briefcase, BarChart4, Wheat, Building2, Factory, Plane,
+  Gem
 } from 'lucide-react';
 import { fetchCoins, searchGlobal } from './services/api';
-import { CoinData, AppSettings, ProfitCalcState, GridColumns, Theme, Timeframe, ChartScale, FavoriteList } from './types';
+import { CoinData, AppSettings, ProfitCalcState, GridColumns, Theme, Timeframe, ChartScale, FavoriteList, MarketType } from './types';
 import TradingViewWidget from './components/TradingViewWidget';
 import { supabase } from './services/supabaseClient';
 import { IGNORED_COINS_GLOBAL } from './constants/ignoredCoins';
 import { Session } from '@supabase/supabase-js';
+import { COMMODITIES_DATA, NYSE_DATA, NASDAQ_DATA, EU_DATA, HKEX_DATA, StaticMarketItem } from './constants/staticMarkets';
+
+// ----------------------------------------------------------------------
+// DATA CONSTANTS FOR NEW MARKETS
+// ----------------------------------------------------------------------
+
+// Helper to create mock CoinData for stocks/indices
+const createAsset = (id: string, symbol: string, name: string, tvSymbol: string, rank: number, price: number): CoinData => ({
+  id, symbol, name, tv_symbol: tvSymbol,
+  image: `https://ui-avatars.com/api/?name=${symbol}&background=random&color=fff&size=64`, // Placeholder
+  current_price: price, 
+  market_cap: 0, market_cap_rank: rank, fully_diluted_valuation: null,
+  total_volume: 0, high_24h: 0, low_24h: 0, price_change_24h: 0, price_change_percentage_24h: 0,
+  market_cap_change_24h: 0, market_cap_change_percentage_24h: 0,
+  circulating_supply: 0, total_supply: 0, max_supply: 0,
+  ath: 0, ath_change_percentage: 0, ath_date: '', atl: 0, atl_change_percentage: 0, atl_date: '',
+  roi: null, last_updated: new Date().toISOString()
+});
+
+const INDICES_DATA: CoinData[] = [
+  createAsset('dowjones', 'US30', 'Dow Jones Industrial', 'DJ:DJI', 1, 41000),
+  createAsset('sp500', 'SP500', 'S&P 500', 'SP:SPX', 2, 5500),
+  createAsset('gold', 'GOLD', 'Gold (XAU/USD)', 'TVC:GOLD', 3, 2500),
+  createAsset('silver', 'SILVER', 'Silver (XAG/USD)', 'TVC:SILVER', 4, 29),
+  createAsset('eurusd', 'EURUSD', 'Euro / US Dollar', 'FX:EURUSD', 5, 1.10),
+  createAsset('gbpusd', 'GBPUSD', 'British Pound / US Dollar', 'FX:GBPUSD', 6, 1.30),
+  createAsset('dxy', 'DXY', 'US Dollar Currency Index', 'TVC:DXY', 7, 101),
+  createAsset('usoil', 'USOIL', 'WTI Crude Oil', 'TVC:USOIL', 8, 70),
+];
+
+const US_STOCKS_DATA: CoinData[] = [
+  createAsset('nvda', 'NVDA', 'NVIDIA Corporation', 'NASDAQ:NVDA', 1, 120),
+  createAsset('tsla', 'TSLA', 'Tesla, Inc.', 'NASDAQ:TSLA', 2, 230),
+  createAsset('aapl', 'AAPL', 'Apple Inc.', 'NASDAQ:AAPL', 3, 220),
+  createAsset('msft', 'MSFT', 'Microsoft Corporation', 'NASDAQ:MSFT', 4, 415),
+  createAsset('amzn', 'AMZN', 'Amazon.com, Inc.', 'NASDAQ:AMZN', 5, 180),
+  createAsset('googl', 'GOOGL', 'Alphabet Inc.', 'NASDAQ:GOOGL', 6, 160),
+  createAsset('meta', 'META', 'Meta Platforms, Inc.', 'NASDAQ:META', 7, 500),
+  createAsset('amd', 'AMD', 'Advanced Micro Devices', 'NASDAQ:AMD', 8, 150),
+  createAsset('nflx', 'NFLX', 'Netflix, Inc.', 'NASDAQ:NFLX', 9, 690),
+  createAsset('coin', 'COIN', 'Coinbase Global', 'NASDAQ:COIN', 10, 170),
+  createAsset('mstr', 'MSTR', 'MicroStrategy Inc.', 'NASDAQ:MSTR', 11, 140),
+  createAsset('gme', 'GME', 'GameStop Corp.', 'NYSE:GME', 12, 22),
+];
 
 // ----------------------------------------------------------------------
 // HELPER FUNCTIONS
 // ----------------------------------------------------------------------
+
+// Helper to fix symbol specific issues (e.g. #NIKE -> NKE)
+const getTVSymbol = (rawSymbol: string, market: MarketType): string => {
+  let s = rawSymbol.replace('#', '').toUpperCase();
+  
+  // Specific Fixes
+  if (s === 'NIKE') return 'NKE';
+  
+  if (market === 'hkex') {
+    // HKEX usually needs 4 digits, sometimes TV needs padding or 'HKEX:' prefix
+    return `HKEX:${s}`;
+  }
+  if (market === 'commodities') {
+     // Common mapping for commodities
+     if (s === 'USCRUDE') return 'TVC:USOIL';
+     if (s === 'UKBRENT') return 'TVC:UKOIL';
+     if (s === 'XAUUSD' || s === 'GOLD') return 'TVC:GOLD';
+     if (s === 'XAGUSD') return 'TVC:SILVER';
+     return s;
+  }
+  return s;
+}
+
+const transformStaticToCoinData = (items: StaticMarketItem[], market: MarketType): CoinData[] => {
+  return items.map((item, index) => {
+    const rawSymbol = item.symbol;
+    const cleanSymbol = rawSymbol.replace('#', '');
+    const tvSymbol = getTVSymbol(rawSymbol, market);
+    
+    return {
+      id: `${market}-${cleanSymbol.toLowerCase()}`,
+      symbol: cleanSymbol,
+      name: cleanSymbol, // Use symbol as name for static items
+      tv_symbol: tvSymbol,
+      image: `https://ui-avatars.com/api/?name=${cleanSymbol}&background=random&color=fff&size=64`,
+      current_price: item.price,
+      market_cap: 0,
+      market_cap_rank: index + 1,
+      fully_diluted_valuation: null,
+      total_volume: item.volume,
+      high_24h: 0,
+      low_24h: 0,
+      price_change_24h: null,
+      price_change_percentage_24h: item.change,
+      market_cap_change_24h: 0,
+      market_cap_change_percentage_24h: 0,
+      circulating_supply: 0,
+      total_supply: 0,
+      max_supply: null,
+      ath: 0,
+      ath_change_percentage: 0,
+      ath_date: '',
+      atl: 0,
+      atl_change_percentage: 0,
+      atl_date: '',
+      roi: null,
+      last_updated: new Date().toISOString()
+    };
+  });
+};
 
 const formatCurrency = (value: number) => {
   return new Intl.NumberFormat('en-US', {
@@ -91,15 +196,18 @@ const Drawer = ({ isOpen, onClose, coin, settings }: { isOpen: boolean; onClose:
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-           <div className="flex items-baseline gap-3">
-              <span className="text-5xl font-bold text-slate-900 dark:text-white tracking-tight">{formatCurrency(coin.current_price)}</span>
-              <span className={`text-xl font-medium px-2.5 py-0.5 rounded-full ${coin.price_change_percentage_24h && coin.price_change_percentage_24h >= 0 ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}`}>
-                {coin.price_change_percentage_24h ? (coin.price_change_percentage_24h >= 0 ? '+' : '') + coin.price_change_percentage_24h.toFixed(2) : '0.00'}%
-              </span>
-           </div>
+           {settings.marketType === 'crypto' && (
+             <div className="flex items-baseline gap-3">
+                <span className="text-5xl font-bold text-slate-900 dark:text-white tracking-tight">{formatCurrency(coin.current_price)}</span>
+                <span className={`text-xl font-medium px-2.5 py-0.5 rounded-full ${coin.price_change_percentage_24h && coin.price_change_percentage_24h >= 0 ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}`}>
+                  {coin.price_change_percentage_24h ? (coin.price_change_percentage_24h >= 0 ? '+' : '') + coin.price_change_percentage_24h.toFixed(2) : '0.00'}%
+                </span>
+             </div>
+           )}
            <div className="h-[65vh] w-full border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden shadow-inner bg-slate-50 dark:bg-slate-950">
               <TradingViewWidget 
-                symbol={coin.symbol} 
+                symbol={coin.symbol}
+                tvSymbol={coin.tv_symbol} 
                 isVisible={true} 
                 theme={settings.theme}
                 interval={settings.timeframe}
@@ -138,6 +246,7 @@ const CoinCard: React.FC<CoinCardProps> = ({ coin, settings, onFavoriteClick, hi
   const cardRef = useRef<HTMLDivElement>(null);
   const [isIntersecting, setIntersecting] = useState(false);
   const isFavorite = settings.favoriteLists.some(list => list.coinIds.includes(coin.id));
+  const isCrypto = settings.marketType === 'crypto';
 
   useEffect(() => {
     const observer = new IntersectionObserver(([entry]) => setIntersecting(entry.isIntersecting), { rootMargin: '100px' });
@@ -145,7 +254,7 @@ const CoinCard: React.FC<CoinCardProps> = ({ coin, settings, onFavoriteClick, hi
     return () => observer.disconnect();
   }, []);
   
-  // Detailed Calculations
+  // Detailed Calculations (Crypto Only)
   const athDrop = coin.ath_change_percentage ?? 0;
   const toAth = coin.current_price > 0 ? ((coin.ath - coin.current_price) / coin.current_price) * 100 : 0;
   const multiplier = coin.current_price > 0 ? coin.ath / coin.current_price : 0;
@@ -178,89 +287,119 @@ const CoinCard: React.FC<CoinCardProps> = ({ coin, settings, onFavoriteClick, hi
     <div ref={cardRef} className="aspect-square bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden shadow-sm flex flex-col relative group">
       <div className="p-3 flex justify-between items-start flex-shrink-0 z-10 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
         <div className="flex items-center gap-2">
-          <img src={coin.image} alt={coin.name} className="w-8 h-8 rounded-full" />
+          {isCrypto ? (
+            <img src={coin.image} alt={coin.name} className="w-8 h-8 rounded-full" />
+          ) : (
+            <div className="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center font-bold text-[10px] text-blue-600 dark:text-blue-300">
+               {coin.symbol.slice(0, 2)}
+            </div>
+          )}
           <div className="flex flex-col">
             <span className="font-bold text-lg leading-none text-slate-900 dark:text-white uppercase">{coin.symbol}</span>
             <span className="text-[10px] text-slate-500">#{coin.market_cap_rank} {coin.name}</span>
-            {/* NEW: External Links */}
-            <div className="flex gap-1 mt-1">
-                <a href={`https://www.coingecko.com/en/coins/${coin.id}`} target="_blank" rel="noreferrer" className="text-[9px] font-bold bg-slate-100 dark:bg-slate-800 hover:bg-green-100 dark:hover:bg-green-900 text-slate-600 dark:text-slate-400 hover:text-green-600 px-1.5 rounded transition">CG</a>
-                <a href={`https://coinmarketcap.com/currencies/${coin.id}`} target="_blank" rel="noreferrer" className="text-[9px] font-bold bg-slate-100 dark:bg-slate-800 hover:bg-blue-100 dark:hover:bg-blue-900 text-slate-600 dark:text-slate-400 hover:text-blue-600 px-1.5 rounded transition">CMC</a>
-                <a href={`https://dexscreener.com/search?q=${coin.symbol}`} target="_blank" rel="noreferrer" className="text-[9px] font-bold bg-slate-100 dark:bg-slate-800 hover:bg-purple-100 dark:hover:bg-purple-900 text-slate-600 dark:text-slate-400 hover:text-purple-600 px-1.5 rounded transition">DEX</a>
-            </div>
+            {/* NEW: External Links for Crypto */}
+            {isCrypto && (
+              <div className="flex gap-1 mt-1 flex-wrap">
+                  <a href={`https://www.coingecko.com/en/coins/${coin.id}`} target="_blank" rel="noreferrer" className="text-[9px] font-bold bg-slate-100 dark:bg-slate-800 hover:bg-green-100 dark:hover:bg-green-900 text-slate-600 dark:text-slate-400 hover:text-green-600 px-1.5 rounded transition">CG</a>
+                  <a href={`https://coinmarketcap.com/currencies/${coin.id}`} target="_blank" rel="noreferrer" className="text-[9px] font-bold bg-slate-100 dark:bg-slate-800 hover:bg-blue-100 dark:hover:bg-blue-900 text-slate-600 dark:text-slate-400 hover:text-blue-600 px-1.5 rounded transition">CMC</a>
+                  <a href={`https://dexscreener.com/search?q=${coin.symbol}`} target="_blank" rel="noreferrer" className="text-[9px] font-bold bg-slate-100 dark:bg-slate-800 hover:bg-purple-100 dark:hover:bg-purple-900 text-slate-600 dark:text-slate-400 hover:text-purple-600 px-1.5 rounded transition">DEX</a>
+                  <a href="https://cryptopective.com/" target="_blank" rel="noreferrer" className="text-[9px] font-bold bg-slate-100 dark:bg-slate-800 hover:bg-orange-100 dark:hover:bg-orange-900 text-slate-600 dark:text-slate-400 hover:text-orange-600 px-1.5 rounded transition" title="CryptoPective">CP</a>
+              </div>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={() => onFavoriteClick(coin.id)}>
              <Star size={18} className={isFavorite ? "text-yellow-400 fill-yellow-400" : "text-slate-300 dark:text-slate-600 hover:text-yellow-400"} />
           </button>
-          <button onClick={() => onCopyAnalysis(coin)} className="text-slate-300 dark:text-slate-600 hover:text-purple-500"><BrainCircuit size={18} /></button>
-          <button onClick={() => hideCoin(coin.id)} className="text-slate-300 dark:text-slate-600 hover:text-red-500"><X size={18} /></button>
+          {isCrypto && <button onClick={() => onCopyAnalysis(coin)} className="text-slate-300 dark:text-slate-600 hover:text-purple-500"><BrainCircuit size={18} /></button>}
+          {isCrypto && <button onClick={() => hideCoin(coin.id)} className="text-slate-300 dark:text-slate-600 hover:text-red-500"><X size={18} /></button>}
         </div>
       </div>
 
       <div className="flex-1 flex flex-col px-3 relative min-h-0">
-        <div className="flex justify-between items-end mb-2 border-b dark:border-slate-800 pb-2">
-          <span className="text-2xl font-bold tracking-tight">{formatCurrency(coin.current_price)}</span>
-          <PercentageBadge value={coin.price_change_percentage_24h} />
-        </div>
-
-        <div className="w-full grid grid-cols-5 gap-1.5 content-start flex-shrink-0 border-b border-slate-100 dark:border-slate-800 pb-2 mb-2">
-          {/* Col 1: Time Changes */}
-          <div className="flex flex-col pr-1 border-r border-slate-100 dark:border-slate-800">
-            <PercentageStat label="7d" value={coin.price_change_percentage_7d_in_currency} />
-            <PercentageStat label="30d" value={coin.price_change_percentage_30d_in_currency} />
-            <PercentageStat label="1y" value={coin.price_change_percentage_1y_in_currency} />
+        
+        {/* PRICE HEADER - Only show numeric values for Crypto since we don't have API data for Stocks */}
+        {isCrypto ? (
+          <div className="flex justify-between items-end mb-2 border-b dark:border-slate-800 pb-2">
+            <span className="text-2xl font-bold tracking-tight">{formatCurrency(coin.current_price)}</span>
+            <PercentageBadge value={coin.price_change_percentage_24h} />
           </div>
-
-          {/* Col 2: ATH Info */}
-          <div className="flex flex-col px-1 border-r border-slate-100 dark:border-slate-800">
-            <StatItem label="ATH" value={formatCompactNumber(coin.ath)} />
-            <div className="flex justify-between items-baseline gap-1 mb-1">
-                <span className="text-slate-500 font-medium text-[11px]">Drop:</span>
-                <span className="text-red-500 font-bold font-mono text-xs">{athDrop.toFixed(1)}%</span>
-            </div>
-            <div className="flex justify-between items-baseline gap-1 mb-1">
-                <span className="text-slate-500 font-medium whitespace-nowrap text-[11px]">To ATH:</span>
-                <span className="text-green-600 dark:text-green-400 font-bold font-mono text-xs">+{toAth.toFixed(0)}%</span>
-            </div>
+        ) : (
+          <div className="flex justify-between items-end mb-2 border-b dark:border-slate-800 pb-2">
+             <div className="flex flex-col">
+                 <span className="text-xl font-bold tracking-tight">{formatCurrency(coin.current_price)}</span>
+                 <PercentageBadge value={coin.price_change_percentage_24h} />
+             </div>
+             <span className="text-[10px] bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-500">
+                {settings.marketType.toUpperCase()}
+             </span>
           </div>
+        )}
 
-          {/* Col 3: Market Info */}
-          <div className="flex flex-col px-1 border-r border-slate-100 dark:border-slate-800">
-              <StatItem label="Cap" value={formatCompactNumber(coin.market_cap)} />
-              <StatItem label="Vol" value={formatCompactNumber(coin.total_volume)} />
-              <div className="flex justify-between items-baseline gap-1 mt-0.5 mb-1">
-                <span className="text-slate-500 font-medium text-[11px]">Rank:</span>
-                <span className="text-blue-500 font-bold text-xs">#{coin.market_cap_rank}</span>
+        {/* STATS GRID - Conditional Rendering */}
+        {isCrypto ? (
+          <div className="w-full grid grid-cols-5 gap-1.5 content-start flex-shrink-0 border-b border-slate-100 dark:border-slate-800 pb-2 mb-2">
+            {/* Col 1: Time Changes */}
+            <div className="flex flex-col pr-1 border-r border-slate-100 dark:border-slate-800">
+              <PercentageStat label="7d" value={coin.price_change_percentage_7d_in_currency} />
+              <PercentageStat label="30d" value={coin.price_change_percentage_30d_in_currency} />
+              <PercentageStat label="1y" value={coin.price_change_percentage_1y_in_currency} />
+            </div>
+
+            {/* Col 2: ATH Info */}
+            <div className="flex flex-col px-1 border-r border-slate-100 dark:border-slate-800">
+              <StatItem label="ATH" value={formatCompactNumber(coin.ath)} />
+              <div className="flex justify-between items-baseline gap-1 mb-1">
+                  <span className="text-slate-500 font-medium text-[11px]">Drop:</span>
+                  <span className="text-red-500 font-bold font-mono text-xs">{athDrop.toFixed(1)}%</span>
               </div>
-          </div>
+              <div className="flex justify-between items-baseline gap-1 mb-1">
+                  <span className="text-slate-500 font-medium whitespace-nowrap text-[11px]">To ATH:</span>
+                  <span className="text-green-600 dark:text-green-400 font-bold font-mono text-xs">+{toAth.toFixed(0)}%</span>
+              </div>
+            </div>
 
-          {/* Col 4: Supply */}
-          <div className="flex flex-col px-1 border-r border-slate-100 dark:border-slate-800">
-            <StatItem label="Total" value={formatCompactNumber(coin.total_supply)} />
-            <StatItem label="Circ" value={formatCompactNumber(coin.circulating_supply)} />
-            <div className="flex justify-between items-baseline gap-1 mt-0.5 mb-1">
-                <span className="text-slate-500 font-medium text-[11px]">Circ %:</span>
-                <span className="text-blue-600 dark:text-blue-400 font-bold font-mono text-xs">{circPercentage.toFixed(1)}%</span>
+            {/* Col 3: Market Info */}
+            <div className="flex flex-col px-1 border-r border-slate-100 dark:border-slate-800">
+                <StatItem label="Cap" value={formatCompactNumber(coin.market_cap)} />
+                <StatItem label="Vol" value={formatCompactNumber(coin.total_volume)} />
+                <div className="flex justify-between items-baseline gap-1 mt-0.5 mb-1">
+                  <span className="text-slate-500 font-medium text-[11px]">Rank:</span>
+                  <span className="text-blue-500 font-bold text-xs">#{coin.market_cap_rank}</span>
+                </div>
+            </div>
+
+            {/* Col 4: Supply */}
+            <div className="flex flex-col px-1 border-r border-slate-100 dark:border-slate-800">
+              <StatItem label="Total" value={formatCompactNumber(coin.total_supply)} />
+              <StatItem label="Circ" value={formatCompactNumber(coin.circulating_supply)} />
+              <div className="flex justify-between items-baseline gap-1 mt-0.5 mb-1">
+                  <span className="text-slate-500 font-medium text-[11px]">Circ %:</span>
+                  <span className="text-blue-600 dark:text-blue-400 font-bold font-mono text-xs">{circPercentage.toFixed(1)}%</span>
+              </div>
+            </div>
+
+            {/* Col 5: Investment/Sim (To ATH) */}
+            <div className="flex flex-col pl-1">
+              <StatItem label="Inv" value={`$${simulationAmount}`} />
+              <StatItem label="Val" value={formatCurrency(potentialValue)} colorClass="text-blue-600 dark:text-blue-400" />
+              <StatItem label="X" value={`${multiplier.toFixed(1)}x`} colorClass="text-green-600 dark:text-green-400" />
             </div>
           </div>
-
-          {/* Col 5: Investment/Sim (To ATH) */}
-          <div className="flex flex-col pl-1">
-            <StatItem label="Inv" value={`$${simulationAmount}`} />
-            <StatItem label="Val" value={formatCurrency(potentialValue)} colorClass="text-blue-600 dark:text-blue-400" />
-            <StatItem label="X" value={`${multiplier.toFixed(1)}x`} colorClass="text-green-600 dark:text-green-400" />
+        ) : (
+          <div className="w-full text-center py-1 text-xs text-slate-400 italic mb-2">
+             Volume: {formatCompactNumber(coin.total_volume)}
           </div>
-        </div>
+        )}
 
         <div className="flex-1 w-full min-h-0 mb-2 rounded bg-slate-50 dark:bg-slate-950/50 overflow-hidden">
-          {activeTab === 'price' && <TradingViewWidget symbol={coin.symbol} isVisible={isIntersecting} theme={settings.theme} interval={settings.timeframe} scale={settings.chartScale} chartType="price" />}
-          {activeTab === 'market_cap' && <TradingViewWidget symbol={coin.symbol} isVisible={isIntersecting} theme={settings.theme} interval={settings.timeframe} scale={settings.chartScale} chartType="market_cap" />}
+          {activeTab === 'price' && <TradingViewWidget symbol={coin.symbol} tvSymbol={coin.tv_symbol} isVisible={isIntersecting} theme={settings.theme} interval={settings.timeframe} scale={settings.chartScale} chartType="price" />}
+          {activeTab === 'market_cap' && <TradingViewWidget symbol={coin.symbol} tvSymbol={coin.tv_symbol} isVisible={isIntersecting} theme={settings.theme} interval={settings.timeframe} scale={settings.chartScale} chartType="market_cap" />}
           {activeTab === 'simultaneous' && (
              <div className="flex flex-col h-full gap-0.5">
-                <div className="flex-1 relative"><TradingViewWidget symbol={coin.symbol} isVisible={isIntersecting} theme={settings.theme} interval={settings.timeframe} scale={settings.chartScale} chartType="price" /></div>
-                <div className="flex-1 relative border-t dark:border-slate-800"><TradingViewWidget symbol={coin.symbol} isVisible={isIntersecting} theme={settings.theme} interval={settings.timeframe} scale={settings.chartScale} chartType="market_cap" /></div>
+                <div className="flex-1 relative"><TradingViewWidget symbol={coin.symbol} tvSymbol={coin.tv_symbol} isVisible={isIntersecting} theme={settings.theme} interval={settings.timeframe} scale={settings.chartScale} chartType="price" /></div>
+                <div className="flex-1 relative border-t dark:border-slate-800"><TradingViewWidget symbol={coin.symbol} tvSymbol={coin.tv_symbol} isVisible={isIntersecting} theme={settings.theme} interval={settings.timeframe} scale={settings.chartScale} chartType="market_cap" /></div>
              </div>
           )}
         </div>
@@ -274,7 +413,7 @@ const CoinCard: React.FC<CoinCardProps> = ({ coin, settings, onFavoriteClick, hi
             </button>
           ))}
         </div>
-        <button onClick={() => openProfitCalc(coin)} className="w-full py-1.5 text-xs font-bold bg-blue-600 text-white rounded hover:bg-blue-700 transition">CryptoPective</button>
+        {isCrypto && <button onClick={() => openProfitCalc(coin)} className="w-full py-1.5 text-xs font-bold bg-blue-600 text-white rounded hover:bg-blue-700 transition">CryptoPective</button>}
       </div>
     </div>
   );
@@ -326,6 +465,7 @@ const App: React.FC = () => {
       showAllCharts: parsed.showAllCharts || false,
       timeframe: parsed.timeframe || 'M',
       chartScale: parsed.chartScale || 'log',
+      marketType: parsed.marketType || 'crypto', // Default to crypto
       lastUpdated: parsed.lastUpdated || 0 
     };
   });
@@ -605,12 +745,35 @@ create policy "Users can update their own settings" on public.app_settings for u
 
   // Derived State Logic
   const filteredCoins = useMemo(() => {
+    const market = settings.marketType;
+    let baseList: CoinData[] = [];
+
+    // SELECT DATA SOURCE
+    if (market === 'crypto') {
+        baseList = coins;
+    } else if (market === 'stocks') {
+        baseList = US_STOCKS_DATA;
+    } else if (market === 'indices') {
+        baseList = INDICES_DATA;
+    } else if (market === 'commodities') {
+        baseList = transformStaticToCoinData(COMMODITIES_DATA, 'commodities');
+    } else if (market === 'nyse') {
+        baseList = transformStaticToCoinData(NYSE_DATA, 'nyse');
+    } else if (market === 'nasdaq') {
+        baseList = transformStaticToCoinData(NASDAQ_DATA, 'nasdaq');
+    } else if (market === 'eu') {
+        baseList = transformStaticToCoinData(EU_DATA, 'eu');
+    } else if (market === 'hkex') {
+        baseList = transformStaticToCoinData(HKEX_DATA, 'hkex');
+    }
+
     const isFavorites = filterType === 'favorites';
     const isSearch = searchTerm.trim().length > 0;
     
-    let result = coins.filter(c => {
+    // Apply Hidden Logic (Only for crypto really, but kept generic)
+    let result = baseList.filter(c => {
       if (settings.hiddenCoins.includes(c.id)) return false;
-      if (IGNORED_COINS_SET.has(c.id) && !settings.restoredGlobalCoins.includes(c.id)) return false;
+      if (market === 'crypto' && IGNORED_COINS_SET.has(c.id) && !settings.restoredGlobalCoins.includes(c.id)) return false;
       return true;
     });
 
@@ -624,19 +787,24 @@ create policy "Users can update their own settings" on public.app_settings for u
       if (activeList) result = result.filter(c => activeList.coinIds.includes(c.id));
     }
 
-    switch (filterType) {
-      case 'gainers': result.sort((a, b) => (b.price_change_percentage_24h ?? -Infinity) - (a.price_change_percentage_24h ?? -Infinity)); break;
-      case 'ath_drop': result.sort((a, b) => (a.ath_change_percentage ?? 0) - (b.ath_change_percentage ?? 0)); break;
+    // Sort Logic - Only relevant for Crypto where we have % changes. 
+    // Stocks/Indices are static lists, so sorting by change is skipped for now unless we add mock random changes (avoided for stability).
+    if (market === 'crypto') {
+        switch (filterType) {
+          case 'gainers': result.sort((a, b) => (b.price_change_percentage_24h ?? -Infinity) - (a.price_change_percentage_24h ?? -Infinity)); break;
+          case 'ath_drop': result.sort((a, b) => (a.ath_change_percentage ?? 0) - (b.ath_change_percentage ?? 0)); break;
+        }
     }
 
-    // Apply Pagination ONLY if not in favorites mode
-    if (!isFavorites && !isGlobalSearch) {
+    // Apply Pagination ONLY if not in favorites mode AND is Crypto (Stocks list is small)
+    // New markets are relatively small lists, so pagination might not be strictly necessary, but sticking to crypto logic for consistency if list grows.
+    if (!isFavorites && !isGlobalSearch && market === 'crypto') {
       const startIndex = (page - 1) * ITEMS_PER_PAGE;
       return result.slice(startIndex, startIndex + ITEMS_PER_PAGE);
     }
 
     return result;
-  }, [coins, searchTerm, filterType, settings.favoriteLists, settings.activeListId, settings.hiddenCoins, settings.restoredGlobalCoins, isGlobalSearch, page, ITEMS_PER_PAGE]);
+  }, [coins, searchTerm, filterType, settings.favoriteLists, settings.activeListId, settings.hiddenCoins, settings.restoredGlobalCoins, settings.marketType, isGlobalSearch, page, ITEMS_PER_PAGE]);
 
   // Auth Modal Component
   const renderAuthModal = () => (
@@ -699,20 +867,75 @@ create policy "Users can update their own settings" on public.app_settings for u
         ))}
       </div>
 
-      <header className="sticky top-0 z-40 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b dark:border-slate-800">
+      {/* NEW: TOP NAVIGATION BAR FOR NEW MARKETS */}
+      <div className="w-full bg-slate-900 text-white border-b border-slate-800 sticky top-0 z-50">
+         <div className="flex items-center gap-1 overflow-x-auto hide-scrollbar px-2 py-2 md:justify-center">
+            <button 
+                onClick={() => modifySettings({ marketType: 'commodities' })}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition ${settings.marketType === 'commodities' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+            >
+                <Wheat size={14} /> Commodities
+            </button>
+            <div className="w-px h-4 bg-slate-700 mx-1"></div>
+            <button 
+                onClick={() => modifySettings({ marketType: 'nyse' })}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition ${settings.marketType === 'nyse' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+            >
+                <Building2 size={14} /> NYSE
+            </button>
+            <button 
+                onClick={() => modifySettings({ marketType: 'nasdaq' })}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition ${settings.marketType === 'nasdaq' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+            >
+                <Factory size={14} /> NASDAQ
+            </button>
+            <div className="w-px h-4 bg-slate-700 mx-1"></div>
+            <button 
+                onClick={() => modifySettings({ marketType: 'eu' })}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition ${settings.marketType === 'eu' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+            >
+                <Globe size={14} /> EU
+            </button>
+            <button 
+                onClick={() => modifySettings({ marketType: 'hkex' })}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition ${settings.marketType === 'hkex' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+            >
+                <Plane size={14} /> HKEX
+            </button>
+         </div>
+      </div>
+
+      <header className="sticky top-[45px] z-40 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b dark:border-slate-800 flex flex-col">
+        {/* Main Toolbar */}
         <div className="w-full px-4 py-3 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <div className="bg-blue-600 p-2 rounded shadow-lg"><TrendingUp className="text-white" size={24} /></div>
             <div>
               <h1 className="text-xl font-bold">PMcrypto</h1>
               <div className="flex items-center gap-2">
-                <span className="text-[10px] text-slate-500 font-mono">Loaded: {totalItemsLoaded}</span>
+                <span className="text-[10px] text-slate-500 font-mono">
+                   {settings.marketType === 'crypto' ? `Loaded: ${totalItemsLoaded}` : settings.marketType.toUpperCase()}
+                </span>
                 {backgroundLoading && <RefreshCcw size={10} className="animate-spin text-blue-500" />}
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-3 overflow-x-auto pb-1 md:pb-0 hide-scrollbar">
+            
+            {/* Standard Market Types (Legacy) */}
+            <div className="flex bg-slate-100 dark:bg-slate-800 rounded p-1 border dark:border-slate-700">
+                <button onClick={() => { modifySettings({ marketType: 'crypto' }); setPage(1); }} className={`px-3 py-1 text-xs font-bold rounded flex items-center gap-1 transition ${settings.marketType === 'crypto' ? 'bg-white dark:bg-slate-700 text-blue-600 shadow' : 'text-slate-500'}`}>
+                    <Database size={14} /> Crypto
+                </button>
+                <button onClick={() => { modifySettings({ marketType: 'stocks' }); setPage(1); }} className={`px-3 py-1 text-xs font-bold rounded flex items-center gap-1 transition ${settings.marketType === 'stocks' ? 'bg-white dark:bg-slate-700 text-blue-600 shadow' : 'text-slate-500'}`}>
+                    <Briefcase size={14} /> US Stocks
+                </button>
+                <button onClick={() => { modifySettings({ marketType: 'indices' }); setPage(1); }} className={`px-3 py-1 text-xs font-bold rounded flex items-center gap-1 transition ${settings.marketType === 'indices' ? 'bg-white dark:bg-slate-700 text-blue-600 shadow' : 'text-slate-500'}`}>
+                    <BarChart4 size={14} /> Indices
+                </button>
+            </div>
+
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
               <input type="text" placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="bg-slate-100 dark:bg-slate-800 border dark:border-slate-700 rounded pl-9 pr-4 py-1.5 text-sm focus:border-blue-500 outline-none w-32 md:w-64" />
@@ -729,14 +952,16 @@ create policy "Users can update their own settings" on public.app_settings for u
               />
             </div>
 
-            <select className="bg-slate-100 dark:bg-slate-800 border dark:border-slate-700 text-sm rounded px-3 py-1.5" value={filterType} onChange={(e) => { setFilterType(e.target.value as any); setPage(1); }}>
-              <option value="all">همه</option>
-              <option value="gainers">پرسودترین</option>
-              <option value="ath_drop">بیشترین ریزش</option>
-              <option value="favorites">علاقه‌مندی</option>
-            </select>
+            {settings.marketType === 'crypto' && (
+              <select className="bg-slate-100 dark:bg-slate-800 border dark:border-slate-700 text-sm rounded px-3 py-1.5" value={filterType} onChange={(e) => { setFilterType(e.target.value as any); setPage(1); }}>
+                <option value="all">همه</option>
+                <option value="gainers">پرسودترین</option>
+                <option value="ath_drop">بیشترین ریزش</option>
+                <option value="favorites">علاقه‌مندی</option>
+              </select>
+            )}
             
-            {filterType === 'favorites' && (
+            {filterType === 'favorites' && settings.marketType === 'crypto' && (
                 <select className="bg-slate-100 dark:bg-slate-800 border dark:border-slate-700 text-sm rounded px-3 py-1.5" value={settings.activeListId} onChange={(e) => modifySettings({ activeListId: e.target.value })}>
                   {settings.favoriteLists.map(list => (<option key={list.id} value={list.id}>{list.name}</option>))}
                 </select>
@@ -793,8 +1018,8 @@ create policy "Users can update their own settings" on public.app_settings for u
           </div>
         ) : (
           <>
-            {/* Pagination UI - Only if NOT in Favorites mode */}
-            {filterType !== 'favorites' && (
+            {/* Pagination UI - Only if NOT in Favorites mode and IS CRYPTO */}
+            {filterType !== 'favorites' && settings.marketType === 'crypto' && (
               <div className="mb-6 flex justify-center items-center gap-4">
                 <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} className="p-2 bg-slate-100 dark:bg-slate-800 rounded disabled:opacity-30"><ChevronLeft size={20} /></button>
                 <div className="text-center"><span className="font-bold">صفحه {page}</span><span className="block text-[10px] text-slate-500">رتبه {(page-1)*ITEMS_PER_PAGE+1} تا {page*ITEMS_PER_PAGE}</span></div>
@@ -802,7 +1027,7 @@ create policy "Users can update their own settings" on public.app_settings for u
               </div>
             )}
 
-            {filterType === 'favorites' && (
+            {filterType === 'favorites' && settings.marketType === 'crypto' && (
               <div className="mb-6 p-4 bg-yellow-50 dark:bg-yellow-900/10 border-l-4 border-yellow-400 text-yellow-800 dark:text-yellow-200 text-sm">
                 در تب علاقه‌مندی‌ها تمام ارزهای منتخب شما بدون صفحه‌بندی نمایش داده می‌شوند.
               </div>
