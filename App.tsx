@@ -205,7 +205,6 @@ const CoinCard: React.FC<CoinCardProps> = ({ coin, settings, onFavoriteClick, hi
           <PercentageBadge value={coin.price_change_percentage_24h} />
         </div>
 
-        {/* UPDATED: Removed text-[10px] constraint to allow child elements to control size */}
         <div className="w-full grid grid-cols-5 gap-1.5 content-start flex-shrink-0 border-b border-slate-100 dark:border-slate-800 pb-2 mb-2">
           {/* Col 1: Time Changes */}
           <div className="flex flex-col pr-1 border-r border-slate-100 dark:border-slate-800">
@@ -355,17 +354,16 @@ const App: React.FC = () => {
     setToasts(prev => prev.filter(t => t.id !== id));
   };
 
-  // 1. Initial Load (1000 coins)
+  // 1. Initial Load: First 500 coins FAST
   useEffect(() => {
     const initialLoad = async () => {
        setLoading(true);
        try {
+          // Fetch Page 1 (500 items) immediately
           const batch1 = await fetchCoins(1, 500);
-          const batch2 = await fetchCoins(2, 500);
-          const allInitial = [...batch1, ...batch2];
-          setCoins(allInitial);
-          setTotalItemsLoaded(allInitial.length);
-          setLoadedBatches(new Set([1, 2]));
+          setCoins(batch1);
+          setTotalItemsLoaded(batch1.length);
+          setLoadedBatches(new Set([1]));
        } catch (err: any) {
           setError(err.message);
        } finally {
@@ -375,7 +373,14 @@ const App: React.FC = () => {
     initialLoad();
   }, []);
 
-  // 2. Progressive Background Loader (Up to 10,000)
+  // 2. Persist 'Loaded' count to LocalStorage whenever it changes
+  useEffect(() => {
+    if (totalItemsLoaded > 0) {
+      localStorage.setItem('pmcrypto_last_total_loaded', totalItemsLoaded.toString());
+    }
+  }, [totalItemsLoaded]);
+
+  // 3. Progressive Background Loader (Up to 10,000) - Every 15 seconds
   useEffect(() => {
     if (loading || isGlobalSearch) return;
 
@@ -402,7 +407,7 @@ const App: React.FC = () => {
            }
        }
        setBackgroundLoading(false);
-    }, 20000); // Every 20 seconds
+    }, 15000); // Changed to 15 seconds
 
     return () => clearInterval(interval);
   }, [loading, totalItemsLoaded, loadedBatches, isGlobalSearch]);
