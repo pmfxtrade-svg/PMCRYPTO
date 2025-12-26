@@ -462,10 +462,18 @@ interface Toast {
 
 const App: React.FC = () => {
   // -- State --
-  const [coins, setCoins] = useState<CoinData[]>([]);
+  const [coins, setCoins] = useState<CoinData[]>([]); // Holds all fetched items
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  
+  // page: Controls the visual page (e.g., 1 to 100)
+  // Each visual page displays 500 items.
   const [page, setPage] = useState<number>(1);
+  const ITEMS_PER_PAGE = 500;
+  const ITEMS_PER_API_BATCH = 1000;
+  
+  const [loadedBatches, setLoadedBatches] = useState<Set<number>>(new Set());
+
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [isGlobalSearch, setIsGlobalSearch] = useState(false); 
   const [targetRankToOpen, setTargetRankToOpen] = useState<number | null>(null); 
@@ -558,6 +566,63 @@ const App: React.FC = () => {
     }
   }, [page, isGlobalSearch]);
 
+  // Background Loading Logic
+  useEffect(() => {
+    if (isGlobalSearch) return;
+
+    const autoLoadNextBatch = async () => {
+       // We only want to auto-load batches 2 and 3 if batch 1 is present
+       // Batch 1 (1-1000)
+       // Batch 2 (1001-2000)
+       // Batch 3 (2001-3000)
+
+       // Check if we have batch 1 (coins.length >= 1000)
+       if (coins.length >= 1000 && !loadedBatches.has(2)) {
+           // Wait 20 seconds then fetch batch 2
+           console.log("Scheduling Batch 2 load in 20s...");
+           setTimeout(async () => {
+               try {
+                   console.log("Fetching Batch 2 background...");
+                   const data = await fetchCoins(2, 1000);
+                   setCoins(prev => {
+                       // Avoid duplicates
+                       const newIds = new Set(data.map(c => c.id));
+                       const filteredPrev = prev.filter(c => !newIds.has(c.id));
+                       return [...filteredPrev, ...data].sort((a,b) => a.market_cap_rank - b.market_cap_rank);
+                   });
+                   setLoadedBatches(prev => new Set([...prev, 2]));
+                   addToast("Loaded next 1000 coins in background", "info");
+               } catch (e) {
+                   console.error("Background load failed", e);
+               }
+           }, 20000);
+       }
+       
+       // Check if we have batch 2 (coins.length >= 2000)
+       if (coins.length >= 2000 && !loadedBatches.has(3)) {
+           // Wait 20 seconds then fetch batch 3
+           console.log("Scheduling Batch 3 load in 20s...");
+           setTimeout(async () => {
+               try {
+                   console.log("Fetching Batch 3 background...");
+                   const data = await fetchCoins(3, 1000);
+                   setCoins(prev => {
+                       const newIds = new Set(data.map(c => c.id));
+                       const filteredPrev = prev.filter(c => !newIds.has(c.id));
+                       return [...filteredPrev, ...data].sort((a,b) => a.market_cap_rank - b.market_cap_rank);
+                   });
+                   setLoadedBatches(prev => new Set([...prev, 3]));
+                   addToast("Loaded final 1000 coins in background", "info");
+               } catch (e) {
+                   console.error("Background load failed", e);
+               }
+           }, 20000);
+       }
+    };
+
+    autoLoadNextBatch();
+  }, [coins.length, isGlobalSearch, loadedBatches]);
+
   // Handle Auth State Changes
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -607,7 +672,8 @@ const App: React.FC = () => {
       
       // Case 1: Numeric Search (Rank Jump)
       if (!isNaN(num) && num > 0) {
-        const targetPage = Math.floor((num - 1) / 2000) + 1;
+        // Calculate needed page and batch
+        const targetPage = Math.floor((num - 1) / ITEMS_PER_PAGE) + 1;
         setPage(targetPage);
         setTargetRankToOpen(num); 
         setIsGlobalSearch(false);
@@ -754,16 +820,30 @@ const App: React.FC = () => {
   };
 
   const loadData = async () => {
+    const requiredApiBatch = Math.ceil((page * ITEMS_PER_PAGE) / ITEMS_PER_API_BATCH);
+
+    // If we already loaded this batch, do nothing except scroll
+    if (loadedBatches.has(requiredApiBatch)) {
+         window.scrollTo({ top: 0, behavior: 'smooth' });
+         return;
+    }
+
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchCoins(page);
-      setCoins(data);
+        const data = await fetchCoins(requiredApiBatch, ITEMS_PER_API_BATCH);
+        setCoins(prev => {
+            // Append and Deduplicate
+            const newIds = new Set(data.map(c => c.id));
+            const filteredPrev = prev.filter(c => !newIds.has(c.id));
+            return [...filteredPrev, ...data].sort((a,b) => a.market_cap_rank - b.market_cap_rank);
+        });
+        setLoadedBatches(prev => new Set([...prev, requiredApiBatch]));
     } catch (err: any) {
-      setError(err.message || 'Failed to fetch data');
+        setError(err.message || 'Failed to fetch data');
     } finally {
-      setLoading(false);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+        setLoading(false);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   };
 
@@ -965,9 +1045,32 @@ using (auth.uid() = user_id);
 
   // -- Derived State --
   const filteredCoins = useMemo(() => {
+    let baseData: CoinData[] = [];
+
+    if (isGlobalSearch) {
+        baseData = coins;
+    } else {
+        // Calculate the slice for the current UI page (500 items)
+        const startIndex = (page - 1) * ITEMS_PER_PAGE;
+        const endIndex = startIndex + ITEMS_PER_PAGE;
+        
+        // Find if we have these coins in our accumulated array
+        // We must sort the coins array by rank to ensure slicing is correct
+        // (Though our setCoins logic attempts to sort, redundancy is safe)
+        const sortedCoins = [...coins].sort((a,b) => a.market_cap_rank - b.market_cap_rank);
+        
+        // Filter out coins that might not belong to this rank range (redundancy check)
+        const rangeCoins = sortedCoins.filter(c => 
+             c.market_cap_rank > startIndex && c.market_cap_rank <= endIndex
+        );
+        
+        baseData = rangeCoins;
+    }
+    
+    // 2. Apply Filters (Local Filtering on current page data)
     const isNumericSearch = !isNaN(parseInt(searchTerm));
 
-    let result = coins.filter(c => {
+    let result = baseData.filter(c => {
       if (settings.hiddenCoins.includes(c.id)) return false;
       if (IGNORED_COINS_SET.has(c.id)) {
           if (settings.restoredGlobalCoins.includes(c.id)) return true;
@@ -981,6 +1084,7 @@ using (auth.uid() = user_id);
       if (isNumericSearch) {
          result = result.filter(c => c.market_cap_rank.toString() === lower);
       } else if (!isGlobalSearch) {
+         // Local filter
          result = result.filter(c => 
            c.name.toLowerCase().includes(lower) || 
            c.symbol.toLowerCase().includes(lower)
@@ -1004,7 +1108,7 @@ using (auth.uid() = user_id);
     }
 
     return result;
-  }, [coins, searchTerm, filterType, settings.favoriteLists, settings.activeListId, settings.hiddenCoins, settings.restoredGlobalCoins, isGlobalSearch]);
+  }, [coins, searchTerm, filterType, settings.favoriteLists, settings.activeListId, settings.hiddenCoins, settings.restoredGlobalCoins, isGlobalSearch, page]);
 
   // -- Render Helpers --
 
@@ -1569,7 +1673,7 @@ create policy "Users can update their own settings" on public.app_settings for u
         {loading && (
           <div className="flex flex-col items-center justify-center py-20 space-y-4">
             <RefreshCcw className="animate-spin text-blue-500" size={40} />
-            <p className="text-slate-500 dark:text-slate-400 animate-pulse">Analyzing market data...</p>
+            <p className="text-slate-500 dark:text-slate-400 animate-pulse">Analyzing market data (fetching 1000 coins)...</p>
           </div>
         )}
 
@@ -1605,7 +1709,7 @@ create policy "Users can update their own settings" on public.app_settings for u
                   <div className="text-center">
                     <span className="text-slate-900 dark:text-white font-bold block">Page {page}</span>
                     <span className="text-xs text-slate-500 dark:text-slate-400 font-mono">
-                       Ranks {(page - 1) * 2000 + 1} - {page * 2000}
+                       Ranks {(page - 1) * ITEMS_PER_PAGE + 1} - {page * ITEMS_PER_PAGE}
                     </span>
                   </div>
                   <button 
@@ -1726,7 +1830,7 @@ create policy "Users can update their own settings" on public.app_settings for u
                   <div className="text-center">
                     <span className="text-slate-900 dark:text-white font-bold block">Page {page}</span>
                     <span className="text-xs text-slate-500 dark:text-slate-400 font-mono">
-                       Ranks {(page - 1) * 2000 + 1} - {page * 2000}
+                       Ranks {(page - 1) * ITEMS_PER_PAGE + 1} - {page * ITEMS_PER_PAGE}
                     </span>
                   </div>
                   <button 

@@ -2,12 +2,15 @@ import { CoinData } from '../types';
 
 const BASE_URL = 'https://api.coingecko.com/api/v3';
 
-// Simple in-memory cache to prevent hitting rate limits
-// Key will now include page number to cache specific 2000-item chunks
+// Simple in-memory cache
 const cache: { [key: string]: { data: CoinData[]; timestamp: number } } = {};
-const CACHE_DURATION = 90 * 1000; // Increased to 90 seconds to reduce API load
+const CACHE_DURATION = 90 * 1000; 
 
-export const fetchCoins = async (page: number = 1, perPage: number = 2000): Promise<CoinData[]> => {
+// Helper for delay to avoid Rate Limits
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+export const fetchCoins = async (page: number = 1, perPage: number = 1000): Promise<CoinData[]> => {
+  // Key represents the batch page (e.g., Batch 1 = Ranks 1-1000)
   const cacheKey = `coins_p${page}_pp${perPage}`;
   const now = Date.now();
 
@@ -17,48 +20,76 @@ export const fetchCoins = async (page: number = 1, perPage: number = 2000): Prom
 
   try {
     // CoinGecko limits per_page to maximum 250.
-    // To get 2000 items, we need to fetch 8 chunks of 250.
+    // To get 1000 items, we need 4 requests of 250.
     const API_LIMIT = 250;
-    const totalChunks = Math.ceil(perPage / API_LIMIT); // 2000 / 250 = 8 chunks
+    const totalChunks = Math.ceil(perPage / API_LIMIT); 
     
-    // Calculate the starting 'API Page' based on the 'App Page'
-    // App Page 1 -> API Pages 1..8
-    // App Page 2 -> API Pages 9..16
+    // Calculate the starting 'API Page' based on the 'App Batch Page'
     const startApiPage = (page - 1) * totalChunks + 1;
 
-    const promises = [];
+    const results: CoinData[] = [];
+
+    // SEQUENTIAL FETCHING WITH RETRY LOGIC
     for (let i = 0; i < totalChunks; i++) {
       const currentApiPage = startApiPage + i;
-      promises.push(
-        fetch(
-          `${BASE_URL}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=${API_LIMIT}&page=${currentApiPage}&sparkline=false&price_change_percentage=24h,7d,30d,1y`
-        ).then(async (res) => {
+      let chunkSuccess = false;
+      let attempts = 0;
+      const MAX_ATTEMPTS = 3;
+
+      while (!chunkSuccess && attempts < MAX_ATTEMPTS) {
+        attempts++;
+        try {
+          const res = await fetch(
+            `${BASE_URL}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=${API_LIMIT}&page=${currentApiPage}&sparkline=false&price_change_percentage=24h,7d,30d,1y`
+          );
+
           if (!res.ok) {
-             if (res.status === 429) throw new Error('API Rate Limit. Please wait 1 minute.');
-             throw new Error(`API Error: ${res.statusText}`);
+             if (res.status === 429) {
+               console.warn(`Rate limit hit at chunk ${currentApiPage} (Attempt ${attempts}). Waiting longer...`);
+               await delay(3000 * attempts); // Increased backoff for 429
+               continue;
+             }
+             
+             if (res.status >= 500) {
+                console.warn(`Server error ${res.status} at chunk ${currentApiPage}. Retrying...`);
+                await delay(2000 * attempts);
+                continue;
+             }
+             
+             throw new Error(`API Error: ${res.statusText} (${res.status})`);
           }
-          return res.json();
-        })
-      );
+
+          const chunkData = await res.json();
+          if (Array.isArray(chunkData)) {
+              results.push(...chunkData);
+          }
+          chunkSuccess = true;
+
+          // Increased delay between chunks to 1000ms (1 second) to be very safe against 429
+          await delay(1000); 
+
+        } catch (e: any) {
+          console.error(`Attempt ${attempts} failed for chunk ${currentApiPage}:`, e.message);
+          
+          if (attempts === MAX_ATTEMPTS) {
+             throw new Error(`Failed to fetch part of the data (Chunk ${currentApiPage}). Check your connection.`);
+          }
+          await delay(2000); 
+        }
+      }
     }
 
-    // Wait for all requests to complete
-    const results = await Promise.all(promises);
-    
-    // Flatten the array of arrays
-    const data: CoinData[] = results.flat();
-    
     // Validate we got data
-    if (data.length === 0) {
+    if (results.length === 0) {
         throw new Error("No data received from API");
     }
 
     cache[cacheKey] = {
-      data,
+      data: results,
       timestamp: now,
     };
 
-    return data;
+    return results;
   } catch (error) {
     console.error('Fetch error:', error);
     throw error;
