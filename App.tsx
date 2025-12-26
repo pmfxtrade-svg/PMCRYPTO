@@ -357,58 +357,51 @@ const App: React.FC = () => {
     setToasts(prev => prev.filter(t => t.id !== id));
   };
 
-  // 1. Initial Load: Sequential Progressive Loading to avoid "Failed to fetch"
+  // 1. Initial Load: Fast 500, then fast-catchup to previous total
   useEffect(() => {
     const initialLoad = async () => {
        setLoading(true);
        try {
-          // A. Read saved total to know how far to restore
+          // A. Read saved total BEFORE we fetch anything. This prevents race conditions.
           const savedTotalStr = localStorage.getItem('pmcrypto_last_total_loaded');
           const savedTotal = savedTotalStr ? parseInt(savedTotalStr, 10) : 0;
           
-          // B. Fetch Page 1 (Always prioritized)
+          // B. Fetch Page 1 (Fast First Paint)
           const batch1 = await fetchCoins(1, 500);
           
-          // Immediately update state with first batch
-          let currentCoins = batch1;
-          // Sort and Dedupe logic
-          const sortCoins = (c: CoinData[]) => 
-            Array.from(new Map(c.map(item => [item.id, item])).values())
-            .sort((a,b) => a.market_cap_rank - b.market_cap_rank);
-
-          setCoins(sortCoins(currentCoins));
-          setTotalItemsLoaded(currentCoins.length);
-          setLoadedBatches(new Set([1]));
-
-          // C. If we need to restore more pages, do it SEQUENTIALLY
-          // We DO NOT use Promise.all here because it causes the "Failed to fetch" (Network Flooding/429) error.
+          let initialCoins = batch1;
+          let initialBatches = new Set([1]);
+          
+          // C. If we previously had more than 500 coins, restore them parallelly
           if (savedTotal > 500) {
               const maxPage = Math.ceil(savedTotal / 500);
-              
+              const promises = [];
+              // Start from page 2 up to maxPage
               for (let i = 2; i <= maxPage; i++) {
-                 try {
-                   // Add a small delay between requests to be polite to the network/API
-                   await new Promise(resolve => setTimeout(resolve, 800)); 
-                   
-                   const nextBatch = await fetchCoins(i, 500);
-                   if (nextBatch.length > 0) {
-                       currentCoins = [...currentCoins, ...nextBatch];
-                       setCoins(sortCoins(currentCoins));
-                       setTotalItemsLoaded(currentCoins.length);
-                       setLoadedBatches(prev => new Set([...prev, i]));
-                   }
-                 } catch (innerErr) {
-                   console.warn(`Restoration paused at page ${i} due to network limit.`);
-                   break; // Stop restoring if we hit a wall, keep what we have
-                 }
+                  promises.push(fetchCoins(i, 500));
               }
+              
+              const results = await Promise.all(promises);
+              const restoredCoins = results.flat();
+              
+              initialCoins = [...batch1, ...restoredCoins];
+              for (let i = 2; i <= maxPage; i++) initialBatches.add(i);
           }
+
+          // D. Final State Update (Single batch update to avoid flickers)
+          // Remove duplicates
+          const uniqueCoins = Array.from(new Map(initialCoins.map(c => [c.id, c])).values())
+            .sort((a,b) => a.market_cap_rank - b.market_cap_rank);
+            
+          setCoins(uniqueCoins);
+          setTotalItemsLoaded(uniqueCoins.length);
+          setLoadedBatches(initialBatches);
           
        } catch (err: any) {
           setError(err.message);
        } finally {
           setLoading(false);
-          setIsRestoring(false); 
+          setIsRestoring(false); // Enable LocalStorage writes
        }
     };
     initialLoad();
@@ -421,7 +414,7 @@ const App: React.FC = () => {
     }
   }, [totalItemsLoaded, isRestoring]);
 
-  // 3. Progressive Background Loader - 5 Second Interval
+  // 3. Progressive Background Loader - Reduced to 5 seconds
   useEffect(() => {
     if (loading || isRestoring || isGlobalSearch) return;
 
@@ -450,7 +443,7 @@ const App: React.FC = () => {
            }
        }
        setBackgroundLoading(false);
-    }, 5000); 
+    }, 5000); // Changed to 5 seconds
 
     return () => clearInterval(interval);
   }, [loading, isRestoring, totalItemsLoaded, loadedBatches, isGlobalSearch]);
@@ -688,4 +681,186 @@ create policy "Users can update their own settings" on public.app_settings for u
           <div className="flex items-center gap-3 overflow-x-auto pb-1 md:pb-0 hide-scrollbar">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
-              <input type="text" placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="bg-slate-100 dark:bg-slate-800 border dark:border-slate-700 rounded pl-9 pr-4 py-1.5
+              <input type="text" placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="bg-slate-100 dark:bg-slate-800 border dark:border-slate-700 rounded pl-9 pr-4 py-1.5 text-sm focus:border-blue-500 outline-none w-32 md:w-64" />
+            </div>
+
+            <div className="flex items-center bg-slate-100 dark:bg-slate-800 rounded px-2 border dark:border-slate-700" title="Amount to invest (simulated) to reach ATH">
+              <DollarSign size={12} className="text-slate-400" />
+              <input 
+                 type="number" 
+                 value={simulationAmount} 
+                 onChange={(e) => setSimulationAmount(Number(e.target.value))} 
+                 className="w-16 bg-transparent text-xs font-bold p-1.5 outline-none" 
+                 placeholder="Invest"
+              />
+            </div>
+
+            <select className="bg-slate-100 dark:bg-slate-800 border dark:border-slate-700 text-sm rounded px-3 py-1.5" value={filterType} onChange={(e) => { setFilterType(e.target.value as any); setPage(1); }}>
+              <option value="all">همه</option>
+              <option value="gainers">پرسودترین</option>
+              <option value="ath_drop">بیشترین ریزش</option>
+              <option value="favorites">علاقه‌مندی</option>
+            </select>
+            
+            {filterType === 'favorites' && (
+                <select className="bg-slate-100 dark:bg-slate-800 border dark:border-slate-700 text-sm rounded px-3 py-1.5" value={settings.activeListId} onChange={(e) => modifySettings({ activeListId: e.target.value })}>
+                  {settings.favoriteLists.map(list => (<option key={list.id} value={list.id}>{list.name}</option>))}
+                </select>
+            )}
+
+            <div className="flex bg-slate-100 dark:bg-slate-800 rounded p-1">
+              {(['15', '60', 'D', 'W', 'M'] as const).map(tf => (
+                <button key={tf} onClick={() => modifySettings({ timeframe: tf })} className={`px-2 py-0.5 text-xs font-bold rounded ${settings.timeframe === tf ? 'bg-blue-600 text-white' : 'text-slate-500'}`}>{tf}</button>
+              ))}
+            </div>
+
+            <button onClick={() => modifySettings({ theme: settings.theme === 'dark' ? 'light' : 'dark' })} className="p-2 text-slate-500">{settings.theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button>
+            <button onClick={() => setShowIgnoreModal(true)} className="p-2 text-slate-500 hover:text-red-500" title="Manage Hidden Coins"><EyeOff size={18} /></button>
+            
+            <div className="h-6 w-px bg-slate-300 dark:bg-slate-700 mx-1"></div>
+
+            {/* RESTORED AUTH BUTTONS */}
+            {session ? (
+                <div className="flex items-center bg-blue-50 dark:bg-blue-900/20 rounded border border-blue-200 dark:border-blue-800 overflow-hidden">
+                    <div className="px-2 py-1 text-xs font-medium text-blue-700 dark:text-blue-300 border-r border-blue-200 dark:border-blue-800 flex items-center gap-1">
+                        <User size={12} />
+                        <span className="max-w-[80px] truncate">{session.user.email?.split('@')[0]}</span>
+                    </div>
+                    <button onClick={handleForceLoad} className="px-2 py-1 hover:bg-blue-100 dark:hover:bg-blue-800 transition text-slate-500" title="Sync">
+                        <Cloud size={14} />
+                    </button>
+                    <button onClick={handleLogout} className="px-2 py-1 hover:bg-red-100 dark:hover:bg-red-900/30 hover:text-red-600 transition text-slate-500" title="Sign Out">
+                        <LogOut size={14} />
+                    </button>
+                </div>
+            ) : (
+                <button onClick={() => { setAuthMode('signin'); setShowAuthModal(true); }} className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-bold hover:bg-blue-700 transition shadow-sm">
+                  <User size={14} /> Sign In
+                </button>
+            )}
+
+            {/* RESTORED IMPORT/EXPORT */}
+            <button onClick={handleExport} className="p-2 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white" title="Export">
+              <Download size={18} />
+            </button>
+            <label className="p-2 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white cursor-pointer" title="Import">
+              <Upload size={18} />
+              <input type="file" className="hidden" accept=".json" onChange={handleImport} />
+            </label>
+          </div>
+        </div>
+      </header>
+
+      <main className="w-full px-4 md:px-6 py-6">
+        {loading ? (
+          <div className="flex flex-col items-center justify-center py-20 space-y-4">
+            <RefreshCcw className="animate-spin text-blue-500" size={40} />
+            <p className="animate-pulse">در حال دریافت اطلاعات اولیه...</p>
+          </div>
+        ) : (
+          <>
+            {/* Pagination UI - Only if NOT in Favorites mode */}
+            {filterType !== 'favorites' && (
+              <div className="mb-6 flex justify-center items-center gap-4">
+                <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} className="p-2 bg-slate-100 dark:bg-slate-800 rounded disabled:opacity-30"><ChevronLeft size={20} /></button>
+                <div className="text-center"><span className="font-bold">صفحه {page}</span><span className="block text-[10px] text-slate-500">رتبه {(page-1)*500+1} تا {page*500}</span></div>
+                <button onClick={() => setPage(p => p + 1)} disabled={totalItemsLoaded < page * 500} className="p-2 bg-slate-100 dark:bg-slate-800 rounded disabled:opacity-30"><ChevronRight size={20} /></button>
+              </div>
+            )}
+
+            {filterType === 'favorites' && (
+              <div className="mb-6 p-4 bg-yellow-50 dark:bg-yellow-900/10 border-l-4 border-yellow-400 text-yellow-800 dark:text-yellow-200 text-sm">
+                در تب علاقه‌مندی‌ها تمام ارزهای منتخب شما بدون صفحه‌بندی نمایش داده می‌شوند.
+              </div>
+            )}
+
+            <div className={`grid gap-4 ${settings.gridColumns === 1 ? 'grid-cols-1' : settings.gridColumns === 2 ? 'grid-cols-1 sm:grid-cols-2' : settings.gridColumns === 3 ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'}`}>
+              {filteredCoins.map(coin => (
+                <CoinCard key={coin.id} coin={coin} settings={settings} onFavoriteClick={(id) => setFavModal({isOpen: true, coinId: id})} hideCoin={(id) => modifySettings({ hiddenCoins: [...settings.hiddenCoins, id] })} openProfitCalc={(c) => setProfitModal({isOpen: true, coin: c})} onCopyAnalysis={(c) => {/* Logic */}} simulationAmount={simulationAmount} />
+              ))}
+            </div>
+          </>
+        )}
+      </main>
+
+      {/* Render Modals and Drawers */}
+      <Drawer isOpen={drawerState.isOpen} coin={drawerState.coin} onClose={() => setDrawerState({isOpen: false, coin: null})} settings={settings} />
+      <Modal isOpen={favModal.isOpen} onClose={() => setFavModal({isOpen: false, coinId: null})} title="مدیریت لیست‌ها">
+        <div className="space-y-2">
+          {settings.favoriteLists.map(list => (
+            <label key={list.id} className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700 rounded cursor-pointer">
+              <span className="font-medium">{list.name}</span>
+              <input type="checkbox" checked={list.coinIds.includes(favModal.coinId!)} onChange={() => {
+                const lists = settings.favoriteLists.map(l => l.id === list.id ? { ...l, coinIds: l.coinIds.includes(favModal.coinId!) ? l.coinIds.filter(id => id !== favModal.coinId) : [...l.coinIds, favModal.coinId!] } : l);
+                modifySettings({ favoriteLists: lists });
+              }} />
+            </label>
+          ))}
+        </div>
+      </Modal>
+
+      {/* Ignore List Management Modal */}
+      <Modal isOpen={showIgnoreModal} onClose={() => setShowIgnoreModal(false)} title="مدیریت ارزهای مخفی">
+        <div className="flex gap-2 mb-4 bg-slate-100 dark:bg-slate-900 p-1 rounded">
+          <button onClick={() => setIgnoreListTab('new')} className={`flex-1 py-1.5 text-sm font-bold rounded transition ${ignoreListTab === 'new' ? 'bg-white dark:bg-slate-700 text-blue-600 shadow' : 'text-slate-500'}`}>
+             New (User Hidden)
+          </button>
+          <button onClick={() => setIgnoreListTab('old')} className={`flex-1 py-1.5 text-sm font-bold rounded transition ${ignoreListTab === 'old' ? 'bg-white dark:bg-slate-700 text-blue-600 shadow' : 'text-slate-500'}`}>
+             Old (Global Ignored)
+          </button>
+        </div>
+
+        {ignoreListTab === 'new' ? (
+          <div className="space-y-3">
+             <div className="flex justify-between items-center mb-2">
+                <span className="text-xs text-slate-500">{settings.hiddenCoins.length} Coins</span>
+                <button onClick={handleCopyUserIgnored} className="text-xs flex items-center gap-1 text-blue-600 hover:underline"><Copy size={12} /> Copy All</button>
+             </div>
+             {settings.hiddenCoins.length === 0 ? <p className="text-center text-sm text-slate-400 py-4">No user-hidden coins.</p> : (
+               <div className="space-y-2">
+                 {settings.hiddenCoins.map(id => (
+                   <div key={id} className="flex items-center justify-between p-2 bg-slate-50 dark:bg-slate-900 border dark:border-slate-700 rounded text-sm">
+                      <span className="font-mono">{id}</span>
+                      <button onClick={() => modifySettings({ hiddenCoins: settings.hiddenCoins.filter(c => c !== id) })} className="text-green-600 hover:text-green-700 p-1 bg-green-50 dark:bg-green-900/30 rounded" title="Restore">
+                         <Undo2 size={16} />
+                      </button>
+                   </div>
+                 ))}
+               </div>
+             )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+             <div className="flex justify-between items-center mb-2">
+                <span className="text-xs text-slate-500">{IGNORED_COINS_GLOBAL.length} Global Coins</span>
+                <button onClick={handleCopyGlobalIgnored} className="text-xs flex items-center gap-1 text-blue-600 hover:underline"><Copy size={12} /> Copy All</button>
+             </div>
+             <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-1">
+               {IGNORED_COINS_GLOBAL.map(id => {
+                 const isRestored = settings.restoredGlobalCoins.includes(id);
+                 return (
+                   <div key={id} className={`flex items-center justify-between p-2 rounded text-sm border ${isRestored ? 'bg-green-50 dark:bg-green-900/10 border-green-200' : 'bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-700'}`}>
+                      <span className={`font-mono ${isRestored ? 'text-green-700 dark:text-green-400 font-bold' : ''}`}>{id}</span>
+                      {isRestored ? (
+                        <button onClick={() => modifySettings({ restoredGlobalCoins: settings.restoredGlobalCoins.filter(c => c !== id) })} className="text-slate-500 hover:text-red-600 p-1" title="Hide Again">
+                           <EyeOff size={16} />
+                        </button>
+                      ) : (
+                        <button onClick={() => modifySettings({ restoredGlobalCoins: [...settings.restoredGlobalCoins, id] })} className="text-slate-400 hover:text-green-600 p-1" title="Restore">
+                           <Eye size={16} />
+                        </button>
+                      )}
+                   </div>
+                 );
+               })}
+             </div>
+          </div>
+        )}
+      </Modal>
+
+      {renderAuthModal()}
+    </div>
+  );
+};
+
+export default App;
