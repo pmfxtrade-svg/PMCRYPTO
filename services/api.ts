@@ -1,65 +1,31 @@
 import { CoinData } from '../types';
 
 const BASE_URL = 'https://api.coingecko.com/api/v3';
-const STORAGE_PREFIX = 'pmcrypto_cache_';
-const CACHE_DURATION = 30 * 60 * 1000; // 30 Minutes
 
-// Helper for delay to avoid Rate Limits
+// Helper for delay to avoid Rate Limits (Increased to prevent 429 errors)
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- LocalStorage Helpers ---
-
-const getCachedData = (key: string) => {
-  try {
-    const item = localStorage.getItem(STORAGE_PREFIX + key);
-    if (!item) return null;
-    return JSON.parse(item) as { data: CoinData[]; timestamp: number };
-  } catch {
-    return null;
-  }
-};
-
-const setCachedData = (key: string, data: CoinData[]) => {
-  try {
-    const payload = { data, timestamp: Date.now() };
-    localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(payload));
-  } catch (e) {
-    console.warn('LocalStorage limit reached. Clearing old PMcrypto cache...');
-    // Simple garbage collection: remove all app-specific keys to make space
-    try {
-      Object.keys(localStorage).forEach(k => {
-        if (k.startsWith(STORAGE_PREFIX)) localStorage.removeItem(k);
-      });
-      // Try saving again for the current request
-      const payload = { data, timestamp: Date.now() };
-      localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(payload));
-    } catch (e2) {
-      console.error('Could not save to local storage even after cleanup.', e2);
-    }
-  }
-};
-
-export const fetchCoins = async (page: number = 1, perPage: number = 500): Promise<CoinData[]> => {
-  const cacheKey = `coins_p${page}_pp${perPage}`;
-  const cached = getCachedData(cacheKey);
-  const now = Date.now();
-
-  // 1. Return fresh cache immediately if valid
-  if (cached && (now - cached.timestamp < CACHE_DURATION)) {
-    return cached.data;
-  }
+export const fetchCoins = async (page: number = 1, perPage: number = 1000): Promise<CoinData[]> => {
+  // NOTE: We moved caching logic to App.tsx to maintain a "Master List" state.
+  // This file now focuses purely on reliable data fetching.
 
   try {
+    // CoinGecko allows max 250 items per request.
     const API_LIMIT = 250;
+    // Calculate how many API calls we need to fulfill the requested 'perPage' (e.g. 1000 / 250 = 4 calls)
     const totalChunks = Math.ceil(perPage / API_LIMIT); 
+    // Calculate the starting API page index. 
+    // If App asks for Page 1 (items 1-1000), we fetch API pages 1, 2, 3, 4.
+    // If App asks for Page 2 (items 1001-2000), we fetch API pages 5, 6, 7, 8.
     const startApiPage = (page - 1) * totalChunks + 1;
+    
     const results: CoinData[] = [];
 
     for (let i = 0; i < totalChunks; i++) {
       const currentApiPage = startApiPage + i;
       let chunkSuccess = false;
       let attempts = 0;
-      const MAX_ATTEMPTS = 2;
+      const MAX_ATTEMPTS = 3; // Increased retry attempts
 
       while (!chunkSuccess && attempts < MAX_ATTEMPTS) {
         attempts++;
@@ -70,7 +36,8 @@ export const fetchCoins = async (page: number = 1, perPage: number = 500): Promi
 
           if (!res.ok) {
              if (res.status === 429) {
-               await delay(5000 * attempts); 
+               // Aggressive backoff for rate limits
+               await delay(2000 * attempts); 
                continue;
              }
              throw new Error(`API Error: ${res.status}`);
@@ -81,39 +48,29 @@ export const fetchCoins = async (page: number = 1, perPage: number = 500): Promi
               results.push(...chunkData);
           }
           chunkSuccess = true;
-          await delay(500); // Politeness delay
-        } catch (e: any) {
-          console.warn(`Attempt ${attempts} failed for page ${currentApiPage}:`, e.message);
-          if (attempts === MAX_ATTEMPTS) {
-             // If this is the final attempt and it failed, re-throw to trigger the outer catch
-             // which handles returning stale cache.
-             throw e;
+          
+          // CRITICAL: Delay between chunks to prevent "Failed to fetch" / Network congestion
+          // Even if successful, wait 1.5 seconds before asking for the next 250 items.
+          if (i < totalChunks - 1) {
+            await delay(1500);
           }
-          await delay(2000); 
+
+        } catch (e: any) {
+          console.warn(`Attempt ${attempts} failed for API page ${currentApiPage}:`, e.message);
+          if (attempts === MAX_ATTEMPTS) {
+             console.error(`Giving up on API page ${currentApiPage}`);
+             // We don't throw here to avoid killing the whole batch. We just return what we have.
+          } else {
+             await delay(3000); 
+          }
         }
       }
     }
 
-    if (results.length > 0) {
-      setCachedData(cacheKey, results);
-      return results;
-    }
-    
-    // If results is empty but no error thrown (unlikely in this loop structure but possible)
-    return cached ? cached.data : [];
+    return results;
 
   } catch (error) {
     console.error('Fetch error:', error);
-    
-    // 2. Fallback: If API fails (Network/Rate Limit), return expired cache if we have it.
-    // This prevents the app from crashing or showing an error screen on reload.
-    if (cached) {
-      console.info('Returning stale cache data due to fetch error.');
-      return cached.data;
-    }
-    
-    // If no cache and network failed, we must return empty array or throw.
-    // Returning empty array allows the app to continue running without crashing.
     return [];
   }
 };

@@ -286,6 +286,9 @@ const CoinCard: React.FC<CoinCardProps> = ({ coin, settings, onFavoriteClick, hi
 
 interface Toast { id: number; message: string; type: 'success' | 'error' | 'info'; }
 
+const CACHE_MASTER_KEY = 'pmcrypto_master_cache';
+const CACHE_DURATION_MS = 60 * 60 * 1000; // 1 Hour
+
 const App: React.FC = () => {
   const [coins, setCoins] = useState<CoinData[]>([]); 
   const [loading, setLoading] = useState<boolean>(true);
@@ -293,20 +296,17 @@ const App: React.FC = () => {
   const [totalItemsLoaded, setTotalItemsLoaded] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState<number>(1);
-  const ITEMS_PER_PAGE = 500;
-  const MAX_COINS = 10000;
   
-  // NEW: State to track if we are currently restoring to prevent overwriting LocalStorage with '500'
-  const [isRestoring, setIsRestoring] = useState(true);
+  // UPDATED: 1000 items per page as requested
+  const ITEMS_PER_PAGE = 1000;
+  const MAX_COINS = 10000;
 
-  const [loadedBatches, setLoadedBatches] = useState<Set<number>>(new Set());
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [isGlobalSearch, setIsGlobalSearch] = useState(false); 
   
   // Auth & Settings State
   const [session, setSession] = useState<Session | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [dbStatus, setDbStatus] = useState<'synced' | 'pending' | 'error' | 'offline'>('offline');
 
   const [settings, setSettings] = useState<AppSettings>(() => {
     const saved = localStorage.getItem('pmcrypto_settings');
@@ -357,96 +357,131 @@ const App: React.FC = () => {
     setToasts(prev => prev.filter(t => t.id !== id));
   };
 
-  // 1. Initial Load: Fast 500, then fast-catchup to previous total
+  // --- PERSISTENCE HELPER ---
+  const saveToMasterCache = (data: CoinData[]) => {
+    try {
+      localStorage.setItem(CACHE_MASTER_KEY, JSON.stringify({
+        coins: data,
+        timestamp: Date.now()
+      }));
+    } catch (e) {
+      console.warn("Storage quota exceeded, clearing old data.");
+      // If full, try to clear other keys
+      try {
+         localStorage.removeItem('pmcrypto_last_total_loaded');
+         // Try again
+         localStorage.setItem(CACHE_MASTER_KEY, JSON.stringify({
+           coins: data,
+           timestamp: Date.now()
+         }));
+      } catch (e2) {
+         console.error("Critical storage failure", e2);
+      }
+    }
+  };
+
+  // 1. Initial Load: Check Cache -> If Invalid -> Fetch Page 1 (1000 items)
   useEffect(() => {
     const initialLoad = async () => {
        setLoading(true);
        try {
-          // A. Read saved total BEFORE we fetch anything. This prevents race conditions.
-          const savedTotalStr = localStorage.getItem('pmcrypto_last_total_loaded');
-          const savedTotal = savedTotalStr ? parseInt(savedTotalStr, 10) : 0;
-          
-          // B. Fetch Page 1 (Fast First Paint)
-          const batch1 = await fetchCoins(1, 500);
-          
-          let initialCoins = batch1;
-          let initialBatches = new Set([1]);
-          
-          // C. If we previously had more than 500 coins, restore them parallelly
-          if (savedTotal > 500) {
-              const maxPage = Math.ceil(savedTotal / 500);
-              const promises = [];
-              // Start from page 2 up to maxPage
-              for (let i = 2; i <= maxPage; i++) {
-                  promises.push(fetchCoins(i, 500));
-              }
-              
-              const results = await Promise.all(promises);
-              const restoredCoins = results.flat();
-              
-              initialCoins = [...batch1, ...restoredCoins];
-              for (let i = 2; i <= maxPage; i++) initialBatches.add(i);
+          // A. Check Master Cache (1 Hour Duration)
+          const cachedRaw = localStorage.getItem(CACHE_MASTER_KEY);
+          if (cachedRaw) {
+             const cached = JSON.parse(cachedRaw);
+             const age = Date.now() - cached.timestamp;
+             
+             if (age < CACHE_DURATION_MS && Array.isArray(cached.coins) && cached.coins.length > 0) {
+                 console.log(`Restoring ${cached.coins.length} coins from cache (Age: ${Math.round(age/1000/60)}m)`);
+                 setCoins(cached.coins);
+                 setTotalItemsLoaded(cached.coins.length);
+                 setLoading(false);
+                 return; // Exit, no network needed for initial paint
+             }
           }
 
-          // D. Final State Update (Single batch update to avoid flickers)
-          // Remove duplicates
-          const uniqueCoins = Array.from(new Map(initialCoins.map(c => [c.id, c])).values())
-            .sort((a,b) => a.market_cap_rank - b.market_cap_rank);
-            
-          setCoins(uniqueCoins);
-          setTotalItemsLoaded(uniqueCoins.length);
-          setLoadedBatches(initialBatches);
+          // B. If no cache, Fetch Page 1 (1000 Items)
+          console.log("Cache expired or empty. Fetching fresh batch...");
+          const batch1 = await fetchCoins(1, ITEMS_PER_PAGE); // 1000 items
           
+          if (batch1.length > 0) {
+            setCoins(batch1);
+            setTotalItemsLoaded(batch1.length);
+            saveToMasterCache(batch1);
+          }
        } catch (err: any) {
           setError(err.message);
+          // Fallback: Try to show cached data even if expired if fetch failed
+          const cachedRaw = localStorage.getItem(CACHE_MASTER_KEY);
+          if (cachedRaw) {
+             const cached = JSON.parse(cachedRaw);
+             if (Array.isArray(cached.coins)) {
+                setCoins(cached.coins);
+                setTotalItemsLoaded(cached.coins.length);
+                addToast("Network failed, showing outdated data", "info");
+             }
+          }
        } finally {
           setLoading(false);
-          setIsRestoring(false); // Enable LocalStorage writes
        }
     };
     initialLoad();
   }, []);
 
-  // 2. Persist 'Loaded' count to LocalStorage ONLY if we are not in restoration mode
+  // 2. Background Loader: Sequentially fetch remaining pages until MAX_COINS
   useEffect(() => {
-    if (!isRestoring && totalItemsLoaded > 0) {
-      localStorage.setItem('pmcrypto_last_total_loaded', totalItemsLoaded.toString());
-    }
-  }, [totalItemsLoaded, isRestoring]);
+    if (loading || isGlobalSearch) return;
+    
+    // Only fetch if we have less than MAX (e.g. 5000) and we actually have some data
+    if (totalItemsLoaded >= MAX_COINS || totalItemsLoaded === 0) return;
 
-  // 3. Progressive Background Loader - Reduced to 5 seconds
-  useEffect(() => {
-    if (loading || isRestoring || isGlobalSearch) return;
-
+    // Use a simpler interval check. 
+    // We check if the last coin's rank roughly matches count. If we have 1000 coins, we need batch 2.
     const interval = setInterval(async () => {
-       if (totalItemsLoaded >= MAX_COINS) {
+        // Prevent concurrent requests
+        if (backgroundLoading) return;
+
+        const nextBatchIndex = Math.floor(totalItemsLoaded / ITEMS_PER_PAGE) + 1;
+        
+        // Safety check
+        if (nextBatchIndex * ITEMS_PER_PAGE > MAX_COINS + ITEMS_PER_PAGE) {
            clearInterval(interval);
            return;
-       }
+        }
 
-       setBackgroundLoading(true);
-       const nextBatchId = Math.floor(totalItemsLoaded / 500) + 1;
-       
-       if (!loadedBatches.has(nextBatchId)) {
-           try {
-              const newData = await fetchCoins(nextBatchId, 500);
-              if (newData.length > 0) {
-                  setCoins(prev => {
-                      const newIds = new Set(newData.map(c => c.id));
-                      return [...prev.filter(c => !newIds.has(c.id)), ...newData].sort((a,b) => a.market_cap_rank - b.market_cap_rank);
-                  });
-                  setLoadedBatches(prev => new Set([...prev, nextBatchId]));
-                  setTotalItemsLoaded(prev => prev + newData.length);
-              }
-           } catch (e) {
-              console.warn("Background batch fetch failed, retrying next interval...");
-           }
-       }
-       setBackgroundLoading(false);
-    }, 5000); // Changed to 5 seconds
+        setBackgroundLoading(true);
+        try {
+            console.log(`Background fetching batch ${nextBatchIndex} (${ITEMS_PER_PAGE} items)...`);
+            const newData = await fetchCoins(nextBatchIndex, ITEMS_PER_PAGE);
+            
+            if (newData.length > 0) {
+                setCoins(prev => {
+                    // Smart Merge: Create Map to avoid duplicates, keep new data's rank if overlapping
+                    const map = new Map();
+                    prev.forEach(c => map.set(c.id, c));
+                    newData.forEach(c => map.set(c.id, c)); // Overwrite with newer
+                    
+                    const merged = Array.from(map.values()).sort((a,b) => a.market_cap_rank - b.market_cap_rank);
+                    
+                    // Save to persistent storage immediately
+                    saveToMasterCache(merged);
+                    return merged;
+                });
+                setTotalItemsLoaded(prev => prev + newData.length);
+            } else {
+               // If we got 0 items, maybe stop asking?
+            }
+        } catch (e) {
+            console.warn("Background fetch warning", e);
+        } finally {
+            setBackgroundLoading(false);
+        }
+
+    }, 5000); // Check every 5 seconds
 
     return () => clearInterval(interval);
-  }, [loading, isRestoring, totalItemsLoaded, loadedBatches, isGlobalSearch]);
+  }, [loading, totalItemsLoaded, isGlobalSearch, backgroundLoading]);
+
 
   const modifySettings = useCallback((updates: Partial<AppSettings> | ((prev: AppSettings) => Partial<AppSettings>)) => {
     setSettings(prev => {
@@ -495,7 +530,6 @@ const App: React.FC = () => {
   const handleLogout = async () => {
       await supabase.auth.signOut();
       setSession(null);
-      setDbStatus('offline');
       addToast("Signed out", "success");
   };
   
@@ -602,7 +636,7 @@ create policy "Users can update their own settings" on public.app_settings for u
     }
 
     return result;
-  }, [coins, searchTerm, filterType, settings.favoriteLists, settings.activeListId, settings.hiddenCoins, settings.restoredGlobalCoins, isGlobalSearch, page]);
+  }, [coins, searchTerm, filterType, settings.favoriteLists, settings.activeListId, settings.hiddenCoins, settings.restoredGlobalCoins, isGlobalSearch, page, ITEMS_PER_PAGE]);
 
   // Auth Modal Component
   const renderAuthModal = () => (
@@ -763,8 +797,8 @@ create policy "Users can update their own settings" on public.app_settings for u
             {filterType !== 'favorites' && (
               <div className="mb-6 flex justify-center items-center gap-4">
                 <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} className="p-2 bg-slate-100 dark:bg-slate-800 rounded disabled:opacity-30"><ChevronLeft size={20} /></button>
-                <div className="text-center"><span className="font-bold">صفحه {page}</span><span className="block text-[10px] text-slate-500">رتبه {(page-1)*500+1} تا {page*500}</span></div>
-                <button onClick={() => setPage(p => p + 1)} disabled={totalItemsLoaded < page * 500} className="p-2 bg-slate-100 dark:bg-slate-800 rounded disabled:opacity-30"><ChevronRight size={20} /></button>
+                <div className="text-center"><span className="font-bold">صفحه {page}</span><span className="block text-[10px] text-slate-500">رتبه {(page-1)*ITEMS_PER_PAGE+1} تا {page*ITEMS_PER_PAGE}</span></div>
+                <button onClick={() => setPage(p => p + 1)} disabled={totalItemsLoaded < page * ITEMS_PER_PAGE} className="p-2 bg-slate-100 dark:bg-slate-800 rounded disabled:opacity-30"><ChevronRight size={20} /></button>
               </div>
             )}
 
