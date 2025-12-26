@@ -3,11 +3,11 @@ import { CoinData } from '../types';
 const BASE_URL = 'https://api.coingecko.com/api/v3';
 
 // Simple in-memory cache to prevent hitting rate limits
-// Key will now include page number to cache specific 1000-item chunks
+// Key will now include page number to cache specific 2000-item chunks
 const cache: { [key: string]: { data: CoinData[]; timestamp: number } } = {};
 const CACHE_DURATION = 90 * 1000; // Increased to 90 seconds to reduce API load
 
-export const fetchCoins = async (page: number = 1, perPage: number = 1000): Promise<CoinData[]> => {
+export const fetchCoins = async (page: number = 1, perPage: number = 2000): Promise<CoinData[]> => {
   const cacheKey = `coins_p${page}_pp${perPage}`;
   const now = Date.now();
 
@@ -17,13 +17,13 @@ export const fetchCoins = async (page: number = 1, perPage: number = 1000): Prom
 
   try {
     // CoinGecko limits per_page to maximum 250.
-    // To get 1000 items, we need to fetch 4 chunks of 250.
+    // To get 2000 items, we need to fetch 8 chunks of 250.
     const API_LIMIT = 250;
-    const totalChunks = Math.ceil(perPage / API_LIMIT); // 1000 / 250 = 4 chunks
+    const totalChunks = Math.ceil(perPage / API_LIMIT); // 2000 / 250 = 8 chunks
     
     // Calculate the starting 'API Page' based on the 'App Page'
-    // App Page 1 -> API Pages 1, 2, 3, 4
-    // App Page 2 -> API Pages 5, 6, 7, 8
+    // App Page 1 -> API Pages 1..8
+    // App Page 2 -> API Pages 9..16
     const startApiPage = (page - 1) * totalChunks + 1;
 
     const promises = [];
@@ -42,10 +42,10 @@ export const fetchCoins = async (page: number = 1, perPage: number = 1000): Prom
       );
     }
 
-    // Wait for all 4 requests to complete
+    // Wait for all requests to complete
     const results = await Promise.all(promises);
     
-    // Flatten the array of arrays [[250], [250], ...] -> [1000]
+    // Flatten the array of arrays
     const data: CoinData[] = results.flat();
     
     // Validate we got data

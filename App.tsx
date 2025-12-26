@@ -607,7 +607,7 @@ const App: React.FC = () => {
       
       // Case 1: Numeric Search (Rank Jump)
       if (!isNaN(num) && num > 0) {
-        const targetPage = Math.floor((num - 1) / 1000) + 1;
+        const targetPage = Math.floor((num - 1) / 2000) + 1;
         setPage(targetPage);
         setTargetRankToOpen(num); 
         setIsGlobalSearch(false);
@@ -1605,7 +1605,7 @@ create policy "Users can update their own settings" on public.app_settings for u
                   <div className="text-center">
                     <span className="text-slate-900 dark:text-white font-bold block">Page {page}</span>
                     <span className="text-xs text-slate-500 dark:text-slate-400 font-mono">
-                       Ranks {(page - 1) * 1000 + 1} - {page * 1000}
+                       Ranks {(page - 1) * 2000 + 1} - {page * 2000}
                     </span>
                   </div>
                   <button 
@@ -1726,7 +1726,7 @@ create policy "Users can update their own settings" on public.app_settings for u
                   <div className="text-center">
                     <span className="text-slate-900 dark:text-white font-bold block">Page {page}</span>
                     <span className="text-xs text-slate-500 dark:text-slate-400 font-mono">
-                       Ranks {(page - 1) * 1000 + 1} - {page * 1000}
+                       Ranks {(page - 1) * 2000 + 1} - {page * 2000}
                     </span>
                   </div>
                   <button 
