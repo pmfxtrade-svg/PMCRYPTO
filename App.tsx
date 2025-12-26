@@ -354,18 +354,59 @@ const App: React.FC = () => {
     setToasts(prev => prev.filter(t => t.id !== id));
   };
 
-  // 1. Initial Load: First 500 coins FAST
+  // 1. Initial Load: Fast 500, then fast-catchup to previous total
   useEffect(() => {
     const initialLoad = async () => {
        setLoading(true);
        try {
-          // Fetch Page 1 (500 items) immediately
+          // A. Fast Load: Always fetch Page 1 (500 items) immediately and show it
           const batch1 = await fetchCoins(1, 500);
           setCoins(batch1);
           setTotalItemsLoaded(batch1.length);
           setLoadedBatches(new Set([1]));
+
+          // B. Restore Check: Do we have more coins from previous session?
+          const savedTotalStr = localStorage.getItem('pmcrypto_last_total_loaded');
+          if (savedTotalStr) {
+             const savedTotal = parseInt(savedTotalStr, 10);
+             
+             // If we previously had more than 500 coins, fast-fetch the rest (likely from cache)
+             if (savedTotal > 500) {
+                const maxPage = Math.ceil(savedTotal / 500);
+                const promises = [];
+                // Start from page 2 up to maxPage
+                for (let i = 2; i <= maxPage; i++) {
+                   promises.push(fetchCoins(i, 500));
+                }
+                
+                // Fetch all parallel
+                const results = await Promise.all(promises);
+                const restoredCoins = results.flat();
+                
+                setCoins(prev => {
+                   // Merge keeping order
+                   const combined = [...prev, ...restoredCoins];
+                   // Remove duplicates just in case
+                   const unique = Array.from(new Map(combined.map(c => [c.id, c])).values())
+                     .sort((a,b) => a.market_cap_rank - b.market_cap_rank);
+                   return unique;
+                });
+
+                setTotalItemsLoaded(prev => {
+                   const newTotal = batch1.length + restoredCoins.length;
+                   return newTotal;
+                });
+                
+                // Update loaded batches so background loader knows where to start
+                const newBatches = new Set([1]);
+                for (let i = 2; i <= maxPage; i++) newBatches.add(i);
+                setLoadedBatches(newBatches);
+             }
+          }
        } catch (err: any) {
           setError(err.message);
+          // If fetch failed completely (network down), try to restore whatever we have in localstorage manually if needed
+          // But api.ts handles fallback to stale cache, so usually we get something.
        } finally {
           setLoading(false);
        }
@@ -396,18 +437,20 @@ const App: React.FC = () => {
        if (!loadedBatches.has(nextBatchId)) {
            try {
               const newData = await fetchCoins(nextBatchId, 500);
-              setCoins(prev => {
-                  const newIds = new Set(newData.map(c => c.id));
-                  return [...prev.filter(c => !newIds.has(c.id)), ...newData].sort((a,b) => a.market_cap_rank - b.market_cap_rank);
-              });
-              setLoadedBatches(prev => new Set([...prev, nextBatchId]));
-              setTotalItemsLoaded(prev => prev + newData.length);
+              if (newData.length > 0) {
+                  setCoins(prev => {
+                      const newIds = new Set(newData.map(c => c.id));
+                      return [...prev.filter(c => !newIds.has(c.id)), ...newData].sort((a,b) => a.market_cap_rank - b.market_cap_rank);
+                  });
+                  setLoadedBatches(prev => new Set([...prev, nextBatchId]));
+                  setTotalItemsLoaded(prev => prev + newData.length);
+              }
            } catch (e) {
               console.warn("Background batch fetch failed, retrying next interval...");
            }
        }
        setBackgroundLoading(false);
-    }, 15000); // Changed to 15 seconds
+    }, 15000); 
 
     return () => clearInterval(interval);
   }, [loading, totalItemsLoaded, loadedBatches, isGlobalSearch]);

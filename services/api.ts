@@ -83,7 +83,12 @@ export const fetchCoins = async (page: number = 1, perPage: number = 500): Promi
           chunkSuccess = true;
           await delay(500); // Politeness delay
         } catch (e: any) {
-          if (attempts === MAX_ATTEMPTS) throw e;
+          console.warn(`Attempt ${attempts} failed for page ${currentApiPage}:`, e.message);
+          if (attempts === MAX_ATTEMPTS) {
+             // If this is the final attempt and it failed, re-throw to trigger the outer catch
+             // which handles returning stale cache.
+             throw e;
+          }
           await delay(2000); 
         }
       }
@@ -91,8 +96,11 @@ export const fetchCoins = async (page: number = 1, perPage: number = 500): Promi
 
     if (results.length > 0) {
       setCachedData(cacheKey, results);
+      return results;
     }
-    return results;
+    
+    // If results is empty but no error thrown (unlikely in this loop structure but possible)
+    return cached ? cached.data : [];
 
   } catch (error) {
     console.error('Fetch error:', error);
@@ -104,7 +112,9 @@ export const fetchCoins = async (page: number = 1, perPage: number = 500): Promi
       return cached.data;
     }
     
-    throw error;
+    // If no cache and network failed, we must return empty array or throw.
+    // Returning empty array allows the app to continue running without crashing.
+    return [];
   }
 };
 
