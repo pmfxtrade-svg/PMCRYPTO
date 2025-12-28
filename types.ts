@@ -34,7 +34,9 @@ export interface CoinData {
   price_change_percentage_30d_in_currency?: number | null;
   price_change_percentage_1y_in_currency?: number | null;
   // For Non-Crypto Assets (Stocks/Indices) to control TradingView symbol format
-  tv_symbol?: string; 
+  tv_symbol?: string;
+  // Brief description in Persian
+  description_fa?: string;
 }
 
 export type ViewMode = 'grid' | 'table';

@@ -35,29 +35,82 @@ const createAsset = (id: string, symbol: string, name: string, tvSymbol: string,
 });
 
 const INDICES_DATA: CoinData[] = [
-  createAsset('dowjones', 'US30', 'Dow Jones Industrial', 'DJ:DJI', 1, 41000),
-  createAsset('sp500', 'SP500', 'S&P 500', 'SP:SPX', 2, 5500),
+  // Removed US30, SP500, DXY as requested
   createAsset('gold', 'GOLD', 'Gold (XAU/USD)', 'TVC:GOLD', 3, 2500),
   createAsset('silver', 'SILVER', 'Silver (XAG/USD)', 'TVC:SILVER', 4, 29),
   createAsset('eurusd', 'EURUSD', 'Euro / US Dollar', 'FX:EURUSD', 5, 1.10),
   createAsset('gbpusd', 'GBPUSD', 'British Pound / US Dollar', 'FX:GBPUSD', 6, 1.30),
-  createAsset('dxy', 'DXY', 'US Dollar Currency Index', 'TVC:DXY', 7, 101),
   createAsset('usoil', 'USOIL', 'WTI Crude Oil', 'TVC:USOIL', 8, 70),
 ];
 
+// Helper for US Stocks with specific stats
+const createStock = (
+  symbol: string, 
+  price: number, 
+  changePerc: number, 
+  high: number, 
+  low: number, 
+  volStr: string, 
+  tvSymbol: string, 
+  descFa: string,
+  rank: number
+): CoinData => {
+  // Convert Volume "1.632M" -> 1632000
+  let vol = 0;
+  if (volStr.endsWith('M')) {
+    vol = parseFloat(volStr.replace('M', '')) * 1000000;
+  } else if (volStr.endsWith('K')) {
+    vol = parseFloat(volStr.replace('K', '')) * 1000;
+  } else {
+    vol = parseFloat(volStr);
+  }
+
+  return {
+    id: `stock-${symbol.toLowerCase()}`,
+    symbol: symbol,
+    name: symbol, // Display symbol as name for stocks
+    tv_symbol: tvSymbol,
+    image: `https://ui-avatars.com/api/?name=${symbol}&background=random&color=0f172a&size=64`,
+    current_price: price,
+    market_cap: 0,
+    market_cap_rank: rank,
+    fully_diluted_valuation: null,
+    total_volume: vol,
+    high_24h: high,
+    low_24h: low,
+    price_change_24h: null,
+    price_change_percentage_24h: changePerc,
+    market_cap_change_24h: 0,
+    market_cap_change_percentage_24h: 0,
+    circulating_supply: 0,
+    total_supply: 0,
+    max_supply: null,
+    ath: 0, ath_change_percentage: 0, ath_date: '', atl: 0, atl_change_percentage: 0, atl_date: '',
+    roi: null,
+    last_updated: new Date().toISOString(),
+    description_fa: descFa
+  };
+};
+
 const US_STOCKS_DATA: CoinData[] = [
-  createAsset('nvda', 'NVDA', 'NVIDIA Corporation', 'NASDAQ:NVDA', 1, 120),
-  createAsset('tsla', 'TSLA', 'Tesla, Inc.', 'NASDAQ:TSLA', 2, 230),
-  createAsset('aapl', 'AAPL', 'Apple Inc.', 'NASDAQ:AAPL', 3, 220),
-  createAsset('msft', 'MSFT', 'Microsoft Corporation', 'NASDAQ:MSFT', 4, 415),
-  createAsset('amzn', 'AMZN', 'Amazon.com, Inc.', 'NASDAQ:AMZN', 5, 180),
-  createAsset('googl', 'GOOGL', 'Alphabet Inc.', 'NASDAQ:GOOGL', 6, 160),
-  createAsset('meta', 'META', 'Meta Platforms, Inc.', 'NASDAQ:META', 7, 500),
-  createAsset('amd', 'AMD', 'Advanced Micro Devices', 'NASDAQ:AMD', 8, 150),
-  createAsset('nflx', 'NFLX', 'Netflix, Inc.', 'NASDAQ:NFLX', 9, 690),
-  createAsset('coin', 'COIN', 'Coinbase Global', 'NASDAQ:COIN', 10, 170),
-  createAsset('mstr', 'MSTR', 'MicroStrategy Inc.', 'NASDAQ:MSTR', 11, 140),
-  createAsset('gme', 'GME', 'GameStop Corp.', 'NYSE:GME', 12, 22),
+  createStock('CRCLX', 81.21, 0.99, 81.47, 80.21, "1.632M", 'NYSE:CRL', "شرکت آزمایشگاهی و تحقیقات دارویی", 1),
+  createStock('HOODX', 117.44, -0.24, 117.88, 117.36, "1.342M", 'NASDAQ:HOOD', "پلتفرم معاملات آنلاین و سرمایه‌گذاری", 2),
+  createStock('TSLAX', 473.67, -0.23, 475.23, 473.30, "3.143M", 'NASDAQ:TSLA', "تولیدکننده خودروهای برقی و انرژی پاک", 3),
+  createStock('AAPLX', 274.11, 0.25, 274.20, 273.30, "2.776M", 'NASDAQ:AAPL', "غول فناوری، تولیدکننده آیفون و نرم‌افزار", 4),
+  createStock('NVDAX', 190.39, 0.06, 190.52, 190.02, "3.132M", 'NASDAQ:NVDA', "پیشرو در تولید پردازنده‌های گرافیکی و هوش مصنوعی", 5),
+  createStock('SPYX', 691.07, 0.07, 691.33, 690.50, "1.457M", 'AMEX:SPY', "صندوق قابل معامله شاخص 500 شرکت برتر آمریکا", 6),
+  createStock('QQQX', 623.81, -0.10, 625.25, 623.20, "1.356M", 'NASDAQ:QQQ', "صندوق شاخص سهام‌های فناوری نزدک", 7),
+  createStock('AMZNX', 232.41, 0.09, 232.89, 232.07, "1.215M", 'NASDAQ:AMZN', "غول تجارت الکترونیک و خدمات ابری", 8),
+  createStock('COINX', 235.88, 0.01, 235.99, 235.85, "1.022M", 'NASDAQ:COIN', "بزرگترین صرافی ارز دیجیتال آمریکا", 9),
+  createStock('GOOGLX', 312.97, -0.02, 314.01, 312.44, "1.681M", 'NASDAQ:GOOGL', "موتور جستجو، تبلیغات و سرویس‌های اینترنتی", 10),
+  createStock('AAPLON', 272.52, 0.04, 273.50, 271.91, "1.541M", 'NASDAQ:AAPL', "اپل (معاملات شبانه/خاص) - تکنولوژی و سخت‌افزار", 11),
+  createStock('PLTRON', 188.40, 0.01, 188.46, 188.38, "1.539M", 'NYSE:PLTR', "تحلیل داده‌های کلان و نرم‌افزارهای امنیتی", 12),
+  createStock('SPYON', 692.84, -0.03, 693.39, 692.80, "1.434M", 'AMEX:SPY', "شاخص اس‌اندپی 500 (معاملات خاص)", 13),
+  createStock('BABAON', 151.45, -0.25, 152.07, 151.27, "1.199M", 'NYSE:BABA', "غول تجارت الکترونیک و تکنولوژی چین", 14),
+  createStock('NVDAON', 190.09, 0.33, 190.29, 189.44, "1.476M", 'NASDAQ:NVDA', "انویدیا (معاملات خاص) - سخت‌افزار هوش مصنوعی", 15),
+  createStock('METAX', 663.03, -0.06, 663.62, 661.29, "1.449M", 'NASDAQ:META', "شبکه‌های اجتماعی (فیس‌بوک، اینستاگرام) و متاورس", 16),
+  createStock('AMZNON', 232.06, -0.17, 232.52, 231.91, "1.348M", 'NASDAQ:AMZN', "آمازون (معاملات خاص) - خرده‌فروشی آنلاین", 17),
+  createStock('MSTRX', 158.72, 0.18, 158.82, 158.09, "1.727M", 'NASDAQ:MSTR', "هوش تجاری و بزرگترین شرکت دارنده بیت‌کوین", 18),
 ];
 
 // ----------------------------------------------------------------------
@@ -331,9 +384,16 @@ const CoinCard: React.FC<CoinCardProps> = ({ coin, settings, onFavoriteClick, hi
                  <span className="text-xl font-bold tracking-tight">{formatCurrency(coin.current_price)}</span>
                  <PercentageBadge value={coin.price_change_percentage_24h} />
              </div>
-             <span className="text-[10px] bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-500">
-                {settings.marketType.toUpperCase()}
-             </span>
+             <div className="flex flex-col items-end">
+                <span className="text-[10px] bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded text-slate-500 mb-1">
+                    {settings.marketType.toUpperCase()}
+                </span>
+                {coin.description_fa && (
+                    <span className="text-[9px] text-slate-500 text-right max-w-[120px] leading-tight" dir="rtl">
+                        {coin.description_fa}
+                    </span>
+                )}
+             </div>
           </div>
         )}
 
@@ -388,8 +448,10 @@ const CoinCard: React.FC<CoinCardProps> = ({ coin, settings, onFavoriteClick, hi
             </div>
           </div>
         ) : (
-          <div className="w-full text-center py-1 text-xs text-slate-400 italic mb-2">
-             Volume: {formatCompactNumber(coin.total_volume)}
+          <div className="w-full text-center py-1 text-xs text-slate-400 italic mb-2 flex justify-between px-2">
+             <span>Vol: {formatCompactNumber(coin.total_volume)}</span>
+             {coin.high_24h > 0 && <span>H: {coin.high_24h}</span>}
+             {coin.low_24h > 0 && <span>L: {coin.low_24h}</span>}
           </div>
         )}
 
